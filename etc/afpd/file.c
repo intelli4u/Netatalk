@@ -37,6 +37,8 @@ char *strchr (), *strrchr ();
 #include <atalk/util.h>
 #include <atalk/cnid.h>
 #include <atalk/unix.h>
+#include <atalk/globals.h>
+#include <atalk/fce_api.h>
 
 #include "directory.h"
 #include "dircache.h"
@@ -45,8 +47,11 @@ char *strchr (), *strrchr ();
 #include "fork.h"
 #include "file.h"
 #include "filedir.h"
-#include "globals.h"
 #include "unix.h"
+
+/* foxconn add start, improvemennt of time machine backup rate,
+   Jonathan 2012/08/22 */
+#define TIME_MACHINE_WA 
 
 /* the format for the finderinfo fields (from IM: Toolbox Essentials):
  * field         bytes        subfield    bytes
@@ -165,8 +170,8 @@ char *set_name(const struct vol *vol, char *data, cnid_t pid, char *name, cnid_t
     else {
         u_int16_t temp;
 
-        if (aint > 255)  /* FIXME safeguard, anyway if no ascii char it's game over*/
-           aint = 255;
+        if (aint > UTF8FILELEN_EARLY)  /* FIXME safeguard, anyway if no ascii char it's game over*/
+           aint = UTF8FILELEN_EARLY;
 
         utf8 = vol->v_kTextEncoding;
         memcpy(data, &utf8, sizeof(utf8));
@@ -316,6 +321,8 @@ int getmetadata(struct vol *vol,
     struct stat         *st;
     struct maccess	ma;
 
+    LOG(log_debug, logtype_afpd, "getmetadata(\"%s\")", path->u_name);
+
     upath = path->u_name;
     st = &path->st;
     data = buf;
@@ -324,9 +331,10 @@ int getmetadata(struct vol *vol,
          || (bitmap & ( (1 << FILPBIT_LNAME) ) && utf8_encoding()) /* FIXME should be m_name utf8 filename */
          || (bitmap & (1 << FILPBIT_FNUM))) {
         if (!path->id) {
+            bstring fullpath;
             struct dir *cachedfile;
             int len = strlen(upath);
-            if ((cachedfile = dircache_search_by_name(vol, dir, upath, len, st->st_ctime)) != NULL)
+            if ((cachedfile = dircache_search_by_name(vol, dir, upath, len)) != NULL)
                 id = cachedfile->d_did;
             else {
                 id = get_id(vol, adp, st, dir->d_did, upath, len);
@@ -339,18 +347,26 @@ int getmetadata(struct vol *vol,
                 if (path->m_name == NULL) {
                     if ((path->m_name = utompath(vol, upath, id, utf8_encoding())) == NULL) {
                         LOG(log_error, logtype_afpd, "getmetadata: utompath error");
-                        exit(EXITERR_SYS);
+                        return AFPERR_MISC;
                     }
                 }
                 
-                if ((cachedfile = dir_new(path->m_name, upath, vol, dir->d_did, id, NULL, st->st_ctime)) == NULL) {
-                    LOG(log_error, logtype_afpd, "getmetadata: error from dir_new");
-                    exit(EXITERR_SYS);
+                /* Build fullpath */
+                if (((fullpath = bstrcpy(dir->d_fullpath)) == NULL)
+                    || (bconchar(fullpath, '/') != BSTR_OK)
+                    || (bcatcstr(fullpath, upath)) != BSTR_OK) {
+                    LOG(log_error, logtype_afpd, "getmetadata: fullpath: %s", strerror(errno));
+                    return AFPERR_MISC;
                 }
 
-                if ((dircache_add(cachedfile)) != 0) {
+                if ((cachedfile = dir_new(path->m_name, upath, vol, dir->d_did, id, fullpath, st)) == NULL) {
+                    LOG(log_error, logtype_afpd, "getmetadata: error from dir_new");
+                    return AFPERR_MISC;
+                }
+
+                if ((dircache_add(vol, cachedfile)) != 0) {
                     LOG(log_error, logtype_afpd, "getmetadata: fatal dircache error");
-                    exit(EXITERR_SYS);
+                    return AFPERR_MISC;
                 }
             }
         } else {
@@ -613,6 +629,8 @@ int getfilparams(struct vol *vol,
     int                 opened = 0;
     int rc;    
 
+    LOG(log_debug, logtype_afpd, "getfilparams(\"%s\")", path->u_name);
+
     opened = PARAM_NEED_ADP(bitmap);
     adp = NULL;
 
@@ -746,11 +764,29 @@ int afp_createfile(AFPObj *obj, char *ibuf, size_t ibuflen _U_, char *rbuf _U_, 
 
     path = s_path->m_name;
     ad_setname(adp, path);
+
+    struct stat st;
+    if (lstat(upath, &st) != 0) {
+        LOG(log_error, logtype_afpd, "afp_createfile(\"%s\"): stat: %s",
+            upath, strerror(errno));
+        ad_close( adp, ADFLAGS_DF|ADFLAGS_HF);
+        return AFPERR_MISC;
+    }
+
+    (void)get_id(vol, adp, &st, dir->d_did, upath, strlen(upath));
+
     ad_flush( adp);
+
+    fce_register_new_file(s_path);
+
     ad_close( adp, ADFLAGS_DF|ADFLAGS_HF );
 
 createfile_done:
-    curdir->offcnt++;
+    curdir->d_offcnt++;
+/* foxconn add start, Jonathan 2012/08/22 */
+#ifdef TIME_MACHINE_WA 	
+	afp_bandsdid_IncreaseOffcnt(curdir->d_did);
+#endif	
 
 #ifdef DROPKLUDGE
     if (vol->v_flags & AFPVOL_DROPBOX) {
@@ -1097,6 +1133,9 @@ int renamefile(const struct vol *vol, int sdir_fd, char *src, char *dst, char *n
 {
     int		rc;
 
+    LOG(log_debug, logtype_afpd,
+        "renamefile: src[%d, \"%s\"] -> dst[\"%s\"]", sdir_fd, src, dst);
+
     if ( unix_rename( sdir_fd, src, -1, dst ) < 0 ) {
         switch ( errno ) {
         case ENOENT :
@@ -1344,7 +1383,11 @@ int afp_copyfile(AFPObj *obj, char *ibuf, size_t ibuflen _U_, char *rbuf _U_, si
         retvalue = err;
         goto copy_exit;
     }
-    curdir->offcnt++;
+    curdir->d_offcnt++;
+/* foxconn add start, Jonathan 2012/08/22 */
+#ifdef TIME_MACHINE_WA 
+	afp_bandsdid_IncreaseOffcnt(curdir->d_did);
+#endif		
 
 #ifdef DROPKLUDGE
     if (vol->v_flags & AFPVOL_DROPBOX) {
@@ -1828,7 +1871,20 @@ reenumerate_id(struct vol *vol, char *name, struct dir *dir)
 
     if (dirreenumerate(dir, &st)) {
         /* we already did it once and the dir haven't been modified */
-    	return dir->offcnt;
+/* foxconn add start, Jonathan 2012/08/22 */
+#ifdef TIME_MACHINE_WA 
+		if(ntohl(dir->d_did )== afp_getbandsdid()){
+
+			return afp_bandsdid_GetOffcnt();
+		}
+		else
+    	return dir->d_offcnt;
+#else
+    	return dir->d_offcnt;
+#endif
+/* foxconn add end, Jonathan 2012/08/22 */
+
+
     }
     
     data.vol = vol;

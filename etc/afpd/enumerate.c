@@ -22,17 +22,21 @@
 #include <atalk/util.h>
 #include <atalk/bstrlib.h>
 #include <atalk/bstradd.h>
+#include <atalk/globals.h>
 
 #include "desktop.h"
 #include "directory.h"
 #include "dircache.h"
 #include "volume.h"
-#include "globals.h"
 #include "file.h"
 #include "fork.h"
 #include "filedir.h"
 
 #define min(a,b)	((a)<(b)?(a):(b))
+
+/* foxconn add start, improvemennt of time machine backup rate,
+   Jonathan 2012/08/22 */
+#define TIME_MACHINE_WA 
 
 /*
  * Struct to save directory reading context in. Used to prevent
@@ -155,7 +159,7 @@ for_each_dirent(const struct vol *vol, char *name, dir_loop fn, void *data)
    macnamelength(1) + macname(31) + utf8(4) + utf8namelen(2) + utf8name(255) +
    oddpadding(1) */
 
-#define REPLY_PARAM_MAXLEN (4 + 104 + 1 + MACFILELEN + 4 + 2 + 255 + 1)
+#define REPLY_PARAM_MAXLEN (4 + 104 + 1 + MACFILELEN + 4 + 2 + UTF8FILELEN_EARLY + 1)
 
 /* ----------------------------- */
 static int enumerate(AFPObj *obj _U_, char *ibuf, size_t ibuflen _U_, 
@@ -284,11 +288,12 @@ static int enumerate(AFPObj *obj _U_, char *ibuf, size_t ibuflen _U_,
         sd.sd_last = sd.sd_buf;
         /* if dir was in the cache we don't have the inode */
         if (( !o_path->st_valid && lstat( ".", &o_path->st ) < 0 ) ||
-              (ret = for_each_dirent(vol, ".", enumerate_loop, (void *)&sd)) < 0) 
+            (ret = for_each_dirent(vol, ".", enumerate_loop, (void *)&sd)) < 0) 
         {
+            LOG(log_error, logtype_afpd, "enumerate: loop error: %s (%d)", strerror(errno), errno);
             switch (errno) {
             case EACCES:
-		return AFPERR_ACCESS;
+                return AFPERR_ACCESS;
             case ENOTDIR:
                 return AFPERR_BADTYPE;
             case ENOMEM:
@@ -358,7 +363,11 @@ static int enumerate(AFPObj *obj _U_, char *ibuf, size_t ibuflen _U_,
              */
             *sd.sd_last = 0;
             sd.sd_last += len + 1;
-            curdir->offcnt--;		/* a little lie */
+            curdir->d_offcnt--;		/* a little lie */
+/* foxconn add start, Jonathan 2012/08/22 */
+#ifdef TIME_MACHINE_WA 
+			afp_bandsdid_decreaseOffcnt(curdir->d_did);
+#endif				
             continue;
         }
 
@@ -374,12 +383,29 @@ static int enumerate(AFPObj *obj _U_, char *ibuf, size_t ibuflen _U_,
                 continue;
             }
             int len = strlen(s_path.u_name);
-            if ((dir = dircache_search_by_name(vol, curdir, s_path.u_name, len, s_path.st.st_ctime)) == NULL) {
+            if ((dir = dircache_search_by_name(vol, curdir, s_path.u_name, len)) == NULL) {
+/* foxconn add start, Jonathan 2012/08/22 
+   if HD have backup folder, "sparsbundle" or "bands", record did here */
+#ifdef TIME_MACHINE_WA 
+		if (strstr(s_path.u_name,"sparsebundle" ) || strstr(s_path.u_name,"bands") )
+		{
+			afp_enablechk();
+		}	
+#endif
                 if ((dir = dir_add(vol, curdir, &s_path, len)) == NULL) {
                     LOG(log_error, logtype_afpd, "enumerate(vid:%u, did:%u, name:'%s'): error adding dir: '%s'",
                         ntohs(vid), ntohl(did), o_path->u_name, s_path.u_name);
+                        #ifdef TIME_MACHINE_WA  /* foxconn add start, Jonathan 2012/08/22 */
+			afp_disablechk(); // jon_20120712, offcnt workaround
+                        #endif
                     return AFPERR_MISC;
                 }
+#ifdef TIME_MACHINE_WA  /* foxconn add start, Jonathan 2012/08/22 */
+		if (strstr(s_path.u_name,"sparsebundle" ) || strstr(s_path.u_name,"bands") )
+		{
+			afp_disablechk();
+                }
+#endif
             }
             if ((ret = getdirparams(vol, dbitmap, &s_path, dir, data + header , &esz)) != AFP_OK)
                 return( ret );

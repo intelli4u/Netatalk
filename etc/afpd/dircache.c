@@ -31,11 +31,16 @@
 #include <atalk/queue.h>
 #include <atalk/bstrlib.h>
 #include <atalk/bstradd.h>
+#include <atalk/globals.h>
 
 #include "dircache.h"
 #include "directory.h"
 #include "hash.h"
-#include "globals.h"
+
+
+/* foxconn add start, improvemennt of time machine backup rate,
+   Jonathan 2012/08/22 */
+#define TIME_MACHINE_WA 
 
 /*
  * Directory Cache
@@ -52,8 +57,8 @@
  * a struct dir is initialized, the fullpath to the directory is stored there.
  *
  * In order to speed up the CNID query for files too, which eg happens when a directory is enumerated,
- * files are stored too in the dircache. In order to differentiate between files and dirs, we re-use
- * the element fullpath, which for files is always NULL.
+ * files are stored too in the dircache. In order to differentiate between files and dirs, we set
+ * the flag DIRF_ISFILE in struct dir.d_flags for files.
  *
  * The most frequent codepatch that leads to caching is directory enumeration (cf enumerate.c):
  * - if a element is a directory:
@@ -96,13 +101,11 @@
  * We have/need two indexes:
  * - a DID/name index on the main dircache, another hashtable
  * - a queue index on the dircache, for evicting the oldest entries
- * The cache supports locking of struct dir elements through the DIRF_CACHELOCK flag. A dir
- * locked this way wont ever be removed from the cache, so be careful.
  *
  * Debugging
  * =========
  *
- * Sending SIGHUP to a afpd child causes it to dump the dircache to a file "/tmp/dircache.PID".
+ * Sending SIGINT to a afpd child causes it to dump the dircache to a file "/tmp/dircache.PID".
  */
 
 /********************************************************
@@ -241,7 +244,7 @@ static unsigned long queue_count;
  * The default is to remove the 256 oldest entries from the cache.
  * 1. Get the oldest entry
  * 2. If it's in use ie open forks reference it or it's curdir requeue it,
- *    or it's locked (from catsearch) dont remove it
+ *    dont remove it
  * 3. Remove the dir from the main cache and the didname index
  * 4. Free the struct dir structure and all its members
  */
@@ -259,8 +262,7 @@ static void dircache_evict(void)
         }
         queue_count--;
 
-        if (curdir == dir
-            || (dir->d_flags & DIRF_CACHELOCK)) {     /* 2 */
+        if (curdir == dir) {                          /* 2 */
             if ((dir->qidx_node = enqueue(index_queue, dir)) == NULL) {
                 dircache_dump();
                 AFP_PANIC("dircache_evict");
@@ -291,7 +293,7 @@ static void dircache_evict(void)
  * This func builds on the fact, that all our code only ever needs to and does search
  * the dircache by CNID expecting directories to be returned, but not files.
  * Thus
- * (1) if we find a file (d_fullpath == NULL) for a given CNID we
+ * (1) if we find a file for a given CNID we
  *     (1a) remove it from the cache
  *     (1b) return NULL indicating nothing found
  * (2) we can then use d_fullpath to stat the directory
@@ -318,7 +320,7 @@ struct dir *dircache_search_by_did(const struct vol *vol, cnid_t cnid)
         cdir = hnode_get(hn);
 
     if (cdir) {
-        if (cdir->d_fullpath == NULL) { /* (1) */
+        if (cdir->d_flags & DIRF_ISFILE) { /* (1) */
             LOG(log_debug, logtype_afpd, "dircache(cnid:%u): {not a directory:\"%s\"}",
                 ntohl(cnid), cfrombstr(cdir->d_u_name));
             (void)dir_remove(vol, cdir); /* (1a) */
@@ -333,7 +335,7 @@ struct dir *dircache_search_by_did(const struct vol *vol, cnid_t cnid)
             dircache_stat.expunged++;
             return NULL;
         }
-        if (cdir->ctime_dircache != st.st_ctime) {
+        if ((cdir->dcache_ctime != st.st_ctime) || (cdir->dcache_ino != st.st_ino)) {
             LOG(log_debug, logtype_afpd, "dircache(cnid:%u): {modified:\"%s\"}",
                 ntohl(cnid), cfrombstr(cdir->d_u_name));
             (void)dir_remove(vol, cdir);
@@ -361,14 +363,17 @@ struct dir *dircache_search_by_did(const struct vol *vol, cnid_t cnid)
  * @param dir      (r) directory
  * @param name     (r) name (server side encoding)
  * @parma len      (r) strlen of name
- * @param ctime    (r) current st_ctime from stat
  *
  * @returns pointer to struct dir if found in cache, else NULL
  */
-struct dir *dircache_search_by_name(const struct vol *vol, const struct dir *dir, char *name, int len, time_t ctime)
+struct dir *dircache_search_by_name(const struct vol *vol,
+                                    const struct dir *dir,
+                                    char *name,
+                                    int len)
 {
     struct dir *cdir = NULL;
     struct dir key;
+    struct stat st;
 
     hnode_t *hn;
     static_bstring uname = {-1, len, (unsigned char *)name};
@@ -393,7 +398,16 @@ struct dir *dircache_search_by_name(const struct vol *vol, const struct dir *dir
     }
 
     if (cdir) {
-        if (cdir->ctime_dircache != ctime) {
+        if (lstat(cfrombstr(cdir->d_fullpath), &st) != 0) {
+            LOG(log_debug, logtype_afpd, "dircache(did:%u,\"%s\"): {missing:\"%s\"}",
+                ntohl(dir->d_did), name, cfrombstr(cdir->d_fullpath));
+            (void)dir_remove(vol, cdir);
+            dircache_stat.expunged++;
+            return NULL;
+        }
+
+        /* Remove modified directories and files */
+        if ((cdir->dcache_ctime != st.st_ctime) || (cdir->dcache_ino != st.st_ino)) {
             LOG(log_debug, logtype_afpd, "dircache(did:%u,\"%s\"): {modified}",
                 ntohl(dir->d_did), name);
             (void)dir_remove(vol, cdir);
@@ -421,18 +435,44 @@ struct dir *dircache_search_by_name(const struct vol *vol, const struct dir *dir
  *
  * @returns 0 on success, -1 on error which should result in an abort
  */
-int dircache_add(struct dir *dir)
+int dircache_add(const struct vol *vol,
+                 struct dir *dir)
 {
-   AFP_ASSERT(dir);
-   AFP_ASSERT(ntohl(dir->d_pdid) >= 2);
-   AFP_ASSERT(ntohl(dir->d_did) >= CNID_START);
-   AFP_ASSERT(dir->d_u_name);
-   AFP_ASSERT(dir->d_vid);
-   AFP_ASSERT(dircache->hash_nodecount <= dircache_maxsize);
+    struct dir *cdir = NULL;
+    struct dir key;
+    hnode_t *hn;
+
+    AFP_ASSERT(dir);
+    AFP_ASSERT(ntohl(dir->d_pdid) >= 2);
+    AFP_ASSERT(ntohl(dir->d_did) >= CNID_START);
+    AFP_ASSERT(dir->d_u_name);
+    AFP_ASSERT(dir->d_vid);
+    AFP_ASSERT(dircache->hash_nodecount <= dircache_maxsize);
 
     /* Check if cache is full */
     if (dircache->hash_nodecount == dircache_maxsize)
         dircache_evict();
+
+    /* 
+     * Make sure we don't add duplicates
+     */
+
+    /* Search primary cache by CNID */
+    key.d_vid = dir->d_vid;
+    key.d_did = dir->d_did;
+    if ((hn = hash_lookup(dircache, &key))) {
+        /* Found an entry with the same CNID, delete it */
+        dir_remove(vol, hnode_get(hn));
+        dircache_stat.expunged++;
+    }
+    key.d_vid = vol->v_vid;
+    key.d_pdid = dir->d_did;
+    key.d_u_name = dir->d_u_name;
+    if ((hn = hash_lookup(index_didname, &key))) {
+        /* Found an entry with the same DID/name, delete it */
+        dir_remove(vol, hnode_get(hn));
+        dircache_stat.expunged++;
+    }
 
     /* Add it to the main dircache */
     if (hash_alloc_insert(dircache, dir, dir) == 0) {
@@ -458,6 +498,31 @@ int dircache_add(struct dir *dir)
     LOG(log_debug, logtype_afpd, "dircache(did:%u,'%s'): {added}",
         ntohl(dir->d_did), cfrombstr(dir->d_u_name));
 
+/* foxconn add start, Jonathan 2012/08/22 */
+#ifdef TIME_MACHINE_WA
+    /* Eric Kao, 2012/07/05 */
+    if (afp_checkflag())
+    {
+        if (!strcmp("bands", cfrombstr(dir->d_u_name)))
+        {	
+            afp_recbandsdid(ntohl(dir->d_did));
+            // for debug
+            /* LOG(log_error, logtype_afpd, "%s >> [tm_wa] record band did as %d\n",
+                __func__,ntohl(dir->d_did)); */
+        }
+
+	if (strstr(cfrombstr(dir->d_u_name),"sparsebundle" ))
+        {	
+            sleep(10);
+            afp_recSparsedid(ntohl(dir->d_did));
+            // for debug
+            /* LOG(log_error, logtype_afpd, "%s >> [tm_wa] record sparsebundle did as %d\n",
+                __func__,ntohl(dir->d_did)); */ 
+        }
+		
+    }
+#endif        
+
    AFP_ASSERT(queue_count == index_didname->hash_nodecount 
            && queue_count == dircache->hash_nodecount);
 
@@ -474,11 +539,8 @@ void dircache_remove(const struct vol *vol _U_, struct dir *dir, int flags)
 {
     hnode_t *hn;
 
-   AFP_ASSERT(dir);
-   AFP_ASSERT((flags & ~(QUEUE_INDEX | DIDNAME_INDEX | DIRCACHE)) == 0);
-
-    if (dir->d_flags & DIRF_CACHELOCK)
-        return;
+    AFP_ASSERT(dir);
+    AFP_ASSERT((flags & ~(QUEUE_INDEX | DIDNAME_INDEX | DIRCACHE)) == 0);
 
     if (flags & QUEUE_INDEX) {
         /* remove it from the queue index */
@@ -488,7 +550,7 @@ void dircache_remove(const struct vol *vol _U_, struct dir *dir, int flags)
 
     if (flags & DIDNAME_INDEX) {
         if ((hn = hash_lookup(index_didname, dir)) == NULL) {
-            LOG(log_error, logtype_default, "dircache_remove(%u,\"%s\"): not in didname index", 
+            LOG(log_error, logtype_afpd, "dircache_remove(%u,\"%s\"): not in didname index", 
                 ntohl(dir->d_did), cfrombstr(dir->d_u_name));
             dircache_dump();
             AFP_PANIC("dircache_remove");
@@ -498,7 +560,7 @@ void dircache_remove(const struct vol *vol _U_, struct dir *dir, int flags)
 
     if (flags & DIRCACHE) {
         if ((hn = hash_lookup(dircache, dir)) == NULL) {
-            LOG(log_error, logtype_default, "dircache_remove(%u,\"%s\"): not in dircache", 
+            LOG(log_error, logtype_afpd, "dircache_remove(%u,\"%s\"): not in dircache", 
                 ntohl(dir->d_did), cfrombstr(dir->d_u_name));
             dircache_dump();
             AFP_PANIC("dircache_remove");
@@ -614,14 +676,13 @@ void dircache_dump(void)
     i = 1;
     while ((hn = hash_scan_next(&hs))) {
         dir = hnode_get(hn);
-        fprintf(dump, "%05u: %3u  %6u  %6u  %s%s  %s\n",
+        fprintf(dump, "%05u: %3u  %6u  %6u %s    %s\n",
                 i++,
                 ntohs(dir->d_vid),
                 ntohl(dir->d_pdid),
                 ntohl(dir->d_did),
-                dir->d_fullpath ? "d" : "f",
-                (dir->d_flags & DIRF_CACHELOCK) ? "l" : "-",
-                cfrombstr(dir->d_u_name));
+                dir->d_flags & DIRF_ISFILE ? "f" : "d",
+                cfrombstr(dir->d_fullpath));
     }
 
     fprintf(dump, "\nSecondary DID/name index:\n");
@@ -631,14 +692,13 @@ void dircache_dump(void)
     i = 1;
     while ((hn = hash_scan_next(&hs))) {
         dir = hnode_get(hn);
-        fprintf(dump, "%05u: %3u  %6u  %6u  %s%s  %s\n",
+        fprintf(dump, "%05u: %3u  %6u  %6u %s    %s\n",
                 i++,
                 ntohs(dir->d_vid),
                 ntohl(dir->d_pdid),
                 ntohl(dir->d_did),
-                dir->d_fullpath ? "d" : "f",
-                (dir->d_flags & DIRF_CACHELOCK) ? "l" : "-",
-                cfrombstr(dir->d_u_name));
+                dir->d_flags & DIRF_ISFILE ? "f" : "d",
+                cfrombstr(dir->d_fullpath));
     }
 
     fprintf(dump, "\nLRU Queue:\n");
@@ -649,17 +709,17 @@ void dircache_dump(void)
         if (n == index_queue)
             break;
         dir = (struct dir *)n->data;
-        fprintf(dump, "%05u: %3u  %6u  %6u  %s%s  %s\n",
+        fprintf(dump, "%05u: %3u  %6u  %6u %s    %s\n",
                 i,
                 ntohs(dir->d_vid),
                 ntohl(dir->d_pdid),
                 ntohl(dir->d_did),
-                dir->d_fullpath ? "d" : "f",
-                (dir->d_flags & DIRF_CACHELOCK) ? "l" : "-",
-                cfrombstr(dir->d_u_name));
+                dir->d_flags & DIRF_ISFILE ? "f" : "d",
+                cfrombstr(dir->d_fullpath));
         n = n->next;
     }
 
     fprintf(dump, "\n");
+    fflush(dump);
     return;
 }

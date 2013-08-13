@@ -5,6 +5,7 @@
 
 int main(int argc, char *argv[])
 {
+	int i;
   set_processname("logger_Test");
 #if 0
   LOG(log_severe, logtype_logger, "Logging Test starting: this should only log to syslog");
@@ -37,7 +38,7 @@ int main(int argc, char *argv[])
 
   /* flooding prevention check */
   LOG(log_debug, logtype_default, "Flooding 3x");
-  for (int i = 0; i < 3; i++) {
+  for (i = 0; i < 3; i++) {
       LOG(log_debug, logtype_default, "Flooding...");
   }
   /* wipe the array */
@@ -45,34 +46,34 @@ int main(int argc, char *argv[])
 
   LOG(log_debug, logtype_default, "-============");
   LOG(log_debug, logtype_default, "Flooding 5x");
-  for (int i = 0; i < 5; i++) {
+  for (i = 0; i < 5; i++) {
       LOG(log_debug, logtype_default, "Flooding...");
   }
   LOG(log_debug, logtype_default, "1"); LOG(log_debug, logtype_default, "2"); LOG(log_debug, logtype_default, "3");
 
   LOG(log_debug, logtype_default, "o============");
   LOG(log_debug, logtype_default, "Flooding 2005x");
-  for (int i = 0; i < 2005; i++) {
+  for (i = 0; i < 2005; i++) {
       LOG(log_debug, logtype_default, "Flooding...");
   }
   LOG(log_debug, logtype_default, "1"); LOG(log_debug, logtype_default, "2"); LOG(log_debug, logtype_default, "3");
 
   LOG(log_debug, logtype_default, "0============");
   LOG(log_debug, logtype_default, "Flooding 11x1");
-  for (int i = 0; i < 11; i++) {
+  for (i = 0; i < 11; i++) {
       LOG(log_error, logtype_default, "flooding 11x1 1");
   }
 
   LOG(log_debug, logtype_default, "1============");
   LOG(log_debug, logtype_default, "Flooding 11x2");
-  for (int i = 0; i < 11; i++) {
+  for (i = 0; i < 11; i++) {
       LOG(log_error, logtype_default, "flooding 11x2 1");
       LOG(log_error, logtype_default, "flooding 11x2 2");
   }
 
   LOG(log_debug, logtype_default, "2============");
   LOG(log_debug, logtype_default, "Flooding 11x3");
-  for (int i = 0; i < 11; i++) {
+  for (i = 0; i < 11; i++) {
       LOG(log_error, logtype_default, "flooding 11x3 1");
       LOG(log_error, logtype_default, "flooding 11x3 2");
       LOG(log_error, logtype_default, "flooding 11x3 3");
@@ -80,7 +81,7 @@ int main(int argc, char *argv[])
 
   LOG(log_debug, logtype_default, "3============");
   LOG(log_debug, logtype_default, "Flooding 11x4");
-  for (int i = 0; i < 11; i++) {
+  for (i = 0; i < 11; i++) {
       LOG(log_error, logtype_default, "flooding 11x4 1");
       LOG(log_error, logtype_default, "flooding 11x4 2");
       LOG(log_error, logtype_default, "flooding 11x4 3");

@@ -477,6 +477,7 @@ void make_log_entry(enum loglevels loglevel, enum logtypes logtype,
      * with LOGGER it's a little late source name and line number
      * are already changed. */
     static int inlog = 0;
+	int i, j;
     int fd, len;
     char temp_buffer[MAXLOGSIZE];
     char log_details_buffer[MAXLOGSIZE];
@@ -539,11 +540,15 @@ void make_log_entry(enum loglevels loglevel, enum logtypes logtype,
         temp_buffer[len+1] = 0;
     }
 
+    if (type_configs[logtype].level >= log_debug)
+        goto log; /* bypass flooding checks */
+
+    goto log;
     /* Prevent flooding: hash the message and check if we got the same one recently */
     int hash = hash_message(temp_buffer) + log_src_linenumber;
 
     /* Search for the same message by hash */
-    for (int i = log_flood_entries - 1; i >= 0; i--) {
+    for (i = log_flood_entries - 1; i >= 0; i--) {
         if (log_flood_array[i].hash == hash) {
 
             /* found same message */
@@ -564,7 +569,7 @@ void make_log_entry(enum loglevels loglevel, enum logtypes logtype,
                     goto exit;
                 }
                 /* move array elements down */
-                for (int j = i + 1; j != LOG_FLOODING_ARRAY_SIZE ; j++)
+                for (j = i + 1; j != LOG_FLOODING_ARRAY_SIZE ; j++)
                     log_flood_array[j-1] = log_flood_array[j];
                 log_flood_entries--;
             }
@@ -586,7 +591,7 @@ void make_log_entry(enum loglevels loglevel, enum logtypes logtype,
                     log_flood_array[0].count - LOG_FLOODING_MINCOUNT + 1);
             write(fd, log_details_buffer, strlen(log_details_buffer));
         }
-        for (int i = 1; i < LOG_FLOODING_ARRAY_SIZE; i++) {
+        for (i = 1; i < LOG_FLOODING_ARRAY_SIZE; i++) {
             log_flood_array[i-1] = log_flood_array[i];
         }
         log_flood_entries--;

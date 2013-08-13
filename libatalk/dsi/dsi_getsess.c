@@ -45,12 +45,12 @@ afp_child_t *dsi_getsession(DSI *dsi, server_child *serv_children, int tickleval
   afp_child_t *child;
 
   if (socketpair(PF_UNIX, SOCK_STREAM, 0, ipc_fds) < 0) {
-      LOG(log_error, logtype_afpd, "dsi_getsess: %s", strerror(errno));
+      LOG(log_error, logtype_dsi, "dsi_getsess: %s", strerror(errno));
       exit( EXITERR_CLNT );
   }
 
   if (setnonblock(ipc_fds[0], 1) != 0 || setnonblock(ipc_fds[1], 1) != 0) {
-      LOG(log_error, logtype_afpd, "dsi_getsess: setnonblock: %s", strerror(errno));
+      LOG(log_error, logtype_dsi, "dsi_getsess: setnonblock: %s", strerror(errno));
       exit(EXITERR_CLNT);
   }
 
@@ -66,7 +66,7 @@ afp_child_t *dsi_getsession(DSI *dsi, server_child *serv_children, int tickleval
   default: /* parent */
     /* using SIGQUIT is hokey, but the child might not have
      * re-established its signal handler for SIGTERM yet. */
-    if ((child = server_child_add(serv_children, CHILD_DSIFORK, pid, ipc_fds)) < 0) {
+    if ((child = server_child_add(serv_children, CHILD_DSIFORK, pid, ipc_fds)) ==  NULL) {
       LOG(log_error, logtype_dsi, "dsi_getsess: %s", strerror(errno));
       dsi->header.dsi_flags = DSIFL_REPLY;
       dsi->header.dsi_code = DSIERR_SERVBUSY;

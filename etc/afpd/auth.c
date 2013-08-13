@@ -39,8 +39,8 @@ extern void afp_get_cmdline( int *ac, char ***av );
 #include <atalk/logger.h>
 #include <atalk/server_ipc.h>
 #include <atalk/uuid.h>
+#include <atalk/globals.h>
 
-#include "globals.h"
 #include "auth.h"
 #include "uam_auth.h"
 #include "switch.h"
@@ -260,10 +260,12 @@ static int login(AFPObj *obj, struct passwd *pwd, void (*logout)(void), int expi
     set_processname("afpd");
 #endif
 
+#if 0 /* foxconn modified */
     if ( pwd->pw_uid == 0 ) {   /* don't allow root login */
         LOG(log_error, logtype_afpd, "login: root login denied!" );
         return AFPERR_NOTAUTH;
     }
+#endif
 
     LOG(log_note, logtype_afpd, "%s Login by %s",
         afp_versions[afp_version_index].av_name, pwd->pw_name);
@@ -395,13 +397,13 @@ static int login(AFPObj *obj, struct passwd *pwd, void (*logout)(void), int expi
         #define GROUPSTR_BUFSIZE 1024
         char groupsstr[GROUPSTR_BUFSIZE];
         char *s = groupsstr;
-        int j = GROUPSTR_BUFSIZE;
+        int j = GROUPSTR_BUFSIZE, i;
 
         int n = snprintf(groupsstr, GROUPSTR_BUFSIZE, "%u", groups[0]);
         j -= n;
         s += n;
 
-        for (int i = 1; i < ngroups; i++) {
+        for (i = 1; i < ngroups; i++) {
             n = snprintf(s, j, ", %u", groups[i]);
             if (n == j) {
                 /* Buffer full */
@@ -436,12 +438,14 @@ static int login(AFPObj *obj, struct passwd *pwd, void (*logout)(void), int expi
 }
 
 /* ---------------------- */
-int afp_zzz(AFPObj *obj, char *ibuf, size_t ibuflen _U_, char *rbuf, size_t *rbuflen)
+int afp_zzz(AFPObj *obj, char *ibuf, size_t ibuflen, char *rbuf, size_t *rbuflen)
 {
     uint32_t data;
     DSI *dsi = (DSI *)AFPobj->handle;
 
     *rbuflen = 0;
+    ibuf += 2;
+    ibuflen -= 2;
 
     if (ibuflen < 4)
         return AFPERR_MISC;
@@ -457,19 +461,20 @@ int afp_zzz(AFPObj *obj, char *ibuf, size_t ibuflen _U_, char *rbuf, size_t *rbu
     if (data & AFPZZZ_EXT_WAKEUP) {
         /* wakeup request from exetended sleep */
         if (dsi->flags & DSI_EXTSLEEP) {
-            LOG(log_debug, logtype_afpd, "afp_zzz: waking up from extended sleep");
+            LOG(log_note, logtype_afpd, "afp_zzz: waking up from extended sleep");
             dsi->flags &= ~(DSI_SLEEPING | DSI_EXTSLEEP);
         }
     } else {
         /* sleep request */
         dsi->flags |= DSI_SLEEPING;
         if (data & AFPZZZ_EXT_SLEEP) {
-            LOG(log_debug, logtype_afpd, "afp_zzz: entering extended sleep");
+            LOG(log_note, logtype_afpd, "afp_zzz: entering extended sleep");
             dsi->flags |= DSI_EXTSLEEP;
         } else {
-            LOG(log_debug, logtype_afpd, "afp_zzz: entering normal sleep");
+            LOG(log_note, logtype_afpd, "afp_zzz: entering normal sleep");
         }
     }
+
     /*
      * According to AFP 3.3 spec we should not return anything,
      * but eg 10.5.8 server still returns the numbers of hours
@@ -591,7 +596,13 @@ int afp_getsession(
             if (ibuflen < idlen || idlen > (90-10)) {
                 return AFPERR_PARAM;
             }
-            ipc_child_write(obj->ipc_fd, IPC_GETSESSION, idlen+8, p);
+            if (!obj->sinfo.clientid) {
+                obj->sinfo.clientid = malloc(idlen + 8);
+                memcpy(obj->sinfo.clientid, p, idlen + 8);
+                obj->sinfo.clientid_len = idlen + 8;
+            }
+            if (ipc_child_write(obj->ipc_fd, IPC_GETSESSION, idlen+8, p) != 0)
+                return AFPERR_MISC;
             tklen = obj->sinfo.sessiontoken_len;
             token = obj->sinfo.sessiontoken;
         }
@@ -673,7 +684,7 @@ int afp_disconnect(AFPObj *obj, char *ibuf, size_t ibuflen _U_, char *rbuf _U_, 
     setitimer(ITIMER_REAL, &none, NULL);
 
     /* check for old session, possibly transfering session from here to there */
-    if (ipc_child_write(obj->ipc_fd, IPC_DISCOLDSESSION, tklen, &token) == -1)
+    if (ipc_child_write(obj->ipc_fd, IPC_DISCOLDSESSION, tklen, &token) != 0)
         goto exit;
     /* write uint16_t DSI request ID */
     if (writet(obj->ipc_fd, &dsi->header.dsi_requestID, 2, 0, 2) != 2) {
@@ -784,6 +795,65 @@ int afp_login(AFPObj *obj, char *ibuf, size_t ibuflen, char *rbuf, size_t *rbufl
     return send_reply(obj, login(obj, pwd, afp_uam->u.uam_login.logout, ((i==AFPERR_PWDEXPR)?1:0)));
 }
 
+#if 1 /* foxconn add start, tm wol workaround, jonathan 2012/07/31 */
+static int pidf_create = 0;
+#define PIDF_PATH	"/tmp/tmsync.pid"
+static int check_process_alive(FILE *fd)
+{
+	FILE *proc_fd;
+    char tmp[20]="";
+    int pid = 0;
+	fgets(tmp,sizeof(tmp),fd);
+	pid = atoi(tmp);
+	sprintf(tmp,"/proc/%d/stat",pid);
+	proc_fd = fopen(tmp,"r");
+	if(proc_fd){
+		fclose(proc_fd);
+		LOG(log_severe, logtype_afpd,"%s >> time machine %d still alive!!",__func__,pid);
+		return 1; /* alive */
+	}	
+	else
+		return 0; /* not exist */
+}
+static int p_create_pid_file()
+{
+	FILE *fd;
+	if(pidf_create){
+		LOG(log_severe, logtype_afpd,"%s >> %s already created !!",__func__,PIDF_PATH);
+		return -1;	
+	}	
+#if 1 /* if this afpd is spawn for "T_Drive", it may recive afp_login_ext(), 
+         so do next check to avoid erase real time machine pid number in tmsync.pid., jonathan 2012/08/06 */
+	fd = fopen(PIDF_PATH,"r"); /* already had tmsync.pid */
+	if(fd != NULL)
+	{
+		/* if the pid process in pid file is still alive, 
+		   don't need change it pid in tmsync.pid file  */
+		LOG(log_severe, logtype_afpd,"%s >>this may \"T_Drive \" process, %s already created !!",__func__,PIDF_PATH);   
+		if(check_process_alive(fd) == 1) 
+		{
+			fclose
+(fd);
+			return -1;
+		}	
+	}
+#endif
+	
+	fd = fopen(PIDF_PATH,"w+");
+	if(fd == NULL){
+		LOG(log_severe, logtype_afpd,"%s >> open %s fail !!",__func__,PIDF_PATH);
+		return -1;	
+	}	
+	fprintf(fd,"%d",getpid());
+	fclose(fd);
+	#if 0 /* for debug */
+		LOG(log_severe, logtype_afpd,"%s >> created %s!!",__func__,PIDF_PATH);
+		system("uptime");
+	#endif
+	pidf_create = 1;
+	return 0;
+}
+#endif /* foxconn add end, tm wol workaround, jonathan 2012/07/31 */
 /* ---------------------- */
 int afp_login_ext(AFPObj *obj, char *ibuf, size_t ibuflen, char *rbuf, size_t *rbuflen)
 {
@@ -793,6 +863,10 @@ int afp_login_ext(AFPObj *obj, char *ibuf, size_t ibuflen, char *rbuf, size_t *r
     char        type;
     u_int16_t   len16;
     char        *username;
+#if 1 /* foxconn add start, tm wol workaround, jonathan 2012/07/31 */
+	//LOG(log_severe, logtype_afpd,"%s >> enter ",__func__);
+	p_create_pid_file();
+#endif	/* foxconn add end, tm wol workaround, jonathan 2012/07/31 */
 
     *rbuflen = 0;
 
@@ -932,11 +1006,15 @@ int afp_logincont(AFPObj *obj, char *ibuf, size_t ibuflen, char *rbuf, size_t *r
 }
 
 
-int afp_logout(AFPObj *obj, char *ibuf _U_, size_t ibuflen  _U_, char *rbuf  _U_, size_t *rbuflen  _U_)
+int afp_logout(AFPObj *obj, char *ibuf _U_, size_t ibuflen  _U_, char *rbuf  _U_, size_t *rbuflen)
 {
+    DSI *dsi = (DSI *)(obj->handle);
+
     LOG(log_note, logtype_afpd, "AFP logout by %s", obj->username);
+    of_close_all_forks();
     close_all_vol();
-    obj->exit(0);
+    dsi->flags = DSI_AFP_LOGGED_OUT;
+    *rbuflen = 0;
     return AFP_OK;
 }
 

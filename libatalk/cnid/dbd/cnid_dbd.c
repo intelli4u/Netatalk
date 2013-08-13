@@ -65,6 +65,10 @@ static void delay(int sec)
     select(0, NULL, NULL, NULL, &tv);
 }
 
+#ifndef AI_NUMERICSERV
+#define AI_NUMERICSERV 0
+#endif
+
 static int tsock_getfd(const char *host, const char *port)
 {
     int sock = -1;
@@ -104,7 +108,7 @@ static int tsock_getfd(const char *host, const char *port)
         }
 
         if (setnonblock(sock, 1) != 0) {
-            LOG(log_error, logtype_cnid, "getfd: setnonblock: %s", strerror(err));
+            LOG(log_error, logtype_cnid, "getfd: setnonblock: %s", strerror(errno));
             close(sock);
             sock = -1;
             return -1;
@@ -332,7 +336,7 @@ static int dbd_rpc(CNID_private *db, struct cnid_dbd_rqst *rqst, struct cnid_dbd
     ret = readt(db->fd, rply, sizeof(struct cnid_dbd_rply), 0, ONE_DELAY);
 
     if (ret != sizeof(struct cnid_dbd_rply)) {
-        LOG(log_error, logtype_cnid, "dbd_rpc: Error reading header from fd (db_dir %s): %s",
+        LOG(log_debug, logtype_cnid, "dbd_rpc: Error reading header from fd (db_dir %s): %s",
             db->db_dir, ret == -1 ? strerror(errno) : "closed");
         rply->name = nametmp;
         return -1;

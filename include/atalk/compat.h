@@ -99,7 +99,7 @@ int vsnprintf(char *str, size_t count, const char *fmt, va_list args);
 #endif
 
 #if !defined(HAVE_PSELECT) || defined(__OpenBSD__)
-extern int pselect(int, fd_set * restrict, fd_set * restrict,
-                   fd_set * restrict, const struct timespec * restrict,
-                   const sigset_t * restrict);
+extern int pselect(int, fd_set * __restrict, fd_set * __restrict,
+                   fd_set * __restrict, const struct timespec * __restrict,
+                   const sigset_t * __restrict);
 #endif

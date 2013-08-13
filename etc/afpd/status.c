@@ -35,8 +35,9 @@
 #include <atalk/asp.h>
 #include <atalk/nbp.h>
 #include <atalk/unicode.h>
+#include <atalk/util.h>
+#include <atalk/globals.h>
 
-#include "globals.h"  /* includes <netdb.h> */
 #include "status.h"
 #include "afp_config.h"
 #include "icon.h"
@@ -453,7 +454,8 @@ void status_init(AFPConfig *aspconfig, AFPConfig *dsiconfig,
             ipok = sa4->sin_addr.s_addr ? 1 : 0;
         } else { /* IPv6 */
             const struct sockaddr_in6 *sa6 = (struct sockaddr_in6 *)&dsi->server;
-            for (int i=0; i<16; i++) {
+		int i;
+            for (i=0; i<16; i++) {
                 if (sa6->sin6_addr.s6_addr[i]) {
                     ipok = 1;
                     break;
@@ -650,14 +652,14 @@ server_signature_auto:
                 options->sigconffile, strerror(errno));
             goto server_signature_random;
         }
-    } else { /* conf file don't exist */
+    } else {                                                          /* conf file don't exist */
         if (( fd = creat(options->sigconffile, 0644 )) < 0 ) {
-            LOG(log_error, logtype_atalkd, "Cannot create %s (%s). Using one-time signature.",
+            LOG(log_error, logtype_afpd, "ERROR: Cannot create %s (%s). Using one-time signature.",
                 options->sigconffile, strerror(errno));
             goto server_signature_random;
         }
         if (( fp = fdopen( fd, "w" )) == NULL ) {
-            LOG(log_error, logtype_atalkd, "Cannot fdopen %s (%s). Using one-time signature.",
+            LOG(log_error, logtype_afpd, "ERROR: Cannot fdopen %s (%s). Using one-time signature.",
                 options->sigconffile, strerror(errno));
             close(fd);
             goto server_signature_random;

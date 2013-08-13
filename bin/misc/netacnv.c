@@ -42,11 +42,12 @@ int main(int argc, char **argv)
     char *string;
     char *f = NULL, *t = NULL;
     charset_t from, to, mac;
+	int i;
 
     while ((opt = getopt(argc, argv, ":o:f:t:")) != -1) {
         switch(opt) {
         case 'o':
-            for (int i = 0; i < sizeof(flag_map)/sizeof(struct flag_map) - 1; i++)
+            for (i = 0; i < sizeof(flag_map)/sizeof(struct flag_map) - 1; i++)
                 if ((strcmp(flag_map[i].flagname, optarg)) == 0)
                     flags |= flag_map[i].flag;
             break;
@@ -63,7 +64,7 @@ int main(int argc, char **argv)
         printf("Usage: test [-o <conversion option> [...]] [-f <from charset>] [-t <to charset>] <string>\n");
         printf("Defaults: -f: UTF8-MAC , -t: UTF8 \n");
         printf("Available conversion options:\n");
-        for (int i = 0; i < (sizeof(flag_map)/sizeof(struct flag_map) - 1); i++) {
+        for (i = 0; i < (sizeof(flag_map)/sizeof(struct flag_map) - 1); i++) {
             printf("%s\n", flag_map[i].flagname);
         }
         return 1;

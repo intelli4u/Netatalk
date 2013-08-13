@@ -1,6 +1,4 @@
 /*
- * $Id: ofork.c,v 1.32 2010/03/12 15:16:49 franklahm Exp $
- *
  * Copyright (c) 1996 Regents of The University of Michigan.
  * All Rights Reserved.  See COPYRIGHT.
  */
@@ -23,18 +21,17 @@
 #include <atalk/util.h>
 #include <atalk/bstrlib.h>
 #include <atalk/bstradd.h>
+#include <atalk/globals.h>
+#include <atalk/fce_api.h>
 
-#include "globals.h"
 #include "volume.h"
 #include "directory.h"
 #include "fork.h"
 
-/* we need to have a hashed list of oforks (by dev inode). just hash
- * by first letter. */
+/* we need to have a hashed list of oforks (by dev inode) */
 #define OFORK_HASHSIZE  64
-static struct ofork     *ofork_table[OFORK_HASHSIZE];
-
-static struct ofork **oforks = NULL;
+static struct ofork *ofork_table[OFORK_HASHSIZE]; /* forks hashed by dev/inode */
+static struct ofork **oforks = NULL;              /* point to allocated table of open forks pointers */
 static int          nforks = 0;
 static u_short      lastrefnum = 0;
 
@@ -42,12 +39,6 @@ static u_short      lastrefnum = 0;
 /* OR some of each character for the hash*/
 static unsigned long hashfn(const struct file_key *key)
 {
-#if 0
-    unsigned long i = 0;
-    while (*name) {
-        i = ((i << 4) | (8*sizeof(i) - 4)) ^ *name++;
-    }
-#endif
     return key->inode & (OFORK_HASHSIZE - 1);
 }
 
@@ -213,7 +204,7 @@ of_alloc(struct vol *vol,
            ad_open really does reinitialize the structure. */
         ad_init(ad, vol->v_adouble, vol->v_ad_options);
 
-        ad->ad_m_namelen = 255 +1;
+        ad->ad_m_namelen = UTF8FILELEN_EARLY +1;
         /* here's the deal: we allocate enough for the standard mac file length.
          * in the future, we'll reallocate in fairly large jumps in case
          * of long unicode names */
@@ -274,7 +265,7 @@ int of_stat(struct path *path)
 }
 
 
-#ifdef HAVE_RENAMEAT
+#ifdef HAVE_ATFUNCS
 int of_fstatat(int dirfd, struct path *path)
 {
     int ret;
@@ -287,7 +278,7 @@ int of_fstatat(int dirfd, struct path *path)
 
    return ret;
 }
-#endif /* HAVE_RENAMEAT */
+#endif /* HAVE_ATFUNCS */
 
 /* -------------------------- 
    stat the current directory.
@@ -367,7 +358,7 @@ struct ofork *of_findname(struct path *path)
  * @param dirfd     (r) directory fd
  * @param path      (rw) pointer to struct path
  */
-#ifdef HAVE_RENAMEAT
+#ifdef HAVE_ATFUNCS
 struct ofork *of_findnameat(int dirfd, struct path *path)
 {
     struct ofork *of;
@@ -441,6 +432,12 @@ int of_closefork(struct ofork *ofork)
             }
         }
     }
+
+    /* Somone has used write_fork, we assume file was changed, register it to file change event api */
+    if (ofork->of_flags & AFPFORK_MODIFIED) {
+        fce_register_file_modification(ofork);
+    }
+
     ret = 0;
     if ( ad_close( ofork->of_ad, adflags ) < 0 ) {
         ret = -1;
@@ -481,6 +478,26 @@ void of_closevol(const struct vol *vol)
         if (oforks[ refnum ] != NULL && oforks[refnum]->of_vol == vol) {
             if (of_closefork( oforks[ refnum ]) < 0 ) {
                 LOG(log_error, logtype_afpd, "of_closevol: %s", strerror(errno) );
+            }
+        }
+    }
+    return;
+}
+
+/* ----------------------
+   close all forks for a volume
+*/
+void of_close_all_forks(void)
+{
+    int refnum;
+
+    if (!oforks)
+        return;
+
+    for ( refnum = 0; refnum < nforks; refnum++ ) {
+        if (oforks[ refnum ] != NULL) {
+            if (of_closefork( oforks[ refnum ]) < 0 ) {
+                LOG(log_error, logtype_afpd, "of_close_all_forks: %s", strerror(errno) );
             }
         }
     }

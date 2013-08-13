@@ -74,19 +74,19 @@
 #define VFS_FUNC_ARGS_REMOVE_ACL const struct vol *vol, const char *path, int dir
 #define VFS_FUNC_VARS_REMOVE_ACL vol, path, dir
 
-#define VFS_FUNC_ARGS_EA_GETSIZE const struct vol * restrict vol, char * restrict rbuf, size_t * restrict rbuflen, const char * restrict uname, int oflag, const char * restrict attruname
+#define VFS_FUNC_ARGS_EA_GETSIZE const struct vol * __restrict vol, char * __restrict rbuf, size_t * __restrict rbuflen, const char * __restrict uname, int oflag, const char * __restrict attruname
 #define VFS_FUNC_VARS_EA_GETSIZE vol, rbuf, rbuflen, uname, oflag, attruname
 
-#define VFS_FUNC_ARGS_EA_GETCONTENT const struct vol * restrict vol, char * restrict rbuf, size_t * restrict rbuflen,  const char * restrict uname, int oflag, const char * restrict attruname, int maxreply
+#define VFS_FUNC_ARGS_EA_GETCONTENT const struct vol * __restrict vol, char * __restrict rbuf, size_t * __restrict rbuflen,  const char * __restrict uname, int oflag, const char * __restrict attruname, int maxreply
 #define VFS_FUNC_VARS_EA_GETCONTENT vol, rbuf, rbuflen, uname, oflag, attruname, maxreply
 
-#define VFS_FUNC_ARGS_EA_LIST const struct vol * restrict vol, char * restrict attrnamebuf, size_t * restrict buflen, const char * restrict uname, int oflag
+#define VFS_FUNC_ARGS_EA_LIST const struct vol * __restrict vol, char * __restrict attrnamebuf, size_t * __restrict buflen, const char * __restrict uname, int oflag
 #define VFS_FUNC_VARS_EA_LIST vol, attrnamebuf, buflen, uname, oflag
 
-#define VFS_FUNC_ARGS_EA_SET const struct vol * restrict vol, const char * restrict uname, const char * restrict attruname, const char * restrict ibuf, size_t attrsize, int oflag
+#define VFS_FUNC_ARGS_EA_SET const struct vol * __restrict vol, const char * __restrict uname, const char * __restrict attruname, const char * __restrict ibuf, size_t attrsize, int oflag
 #define VFS_FUNC_VARS_EA_SET vol, uname, attruname, ibuf, attrsize, oflag
 
-#define VFS_FUNC_ARGS_EA_REMOVE const struct vol * restrict vol, const char * restrict uname, const char * restrict attruname, int oflag
+#define VFS_FUNC_ARGS_EA_REMOVE const struct vol * __restrict vol, const char * __restrict uname, const char * __restrict attruname, int oflag
 #define VFS_FUNC_VARS_EA_REMOVE vol, uname, attruname, oflag
 
 /*
@@ -122,6 +122,6 @@ struct vfs_ops {
     int (*vfs_ea_remove)     (VFS_FUNC_ARGS_EA_REMOVE);
 };
 
-extern void initvol_vfs(struct vol * restrict vol);
+extern void initvol_vfs(struct vol * __restrict vol);
 
 #endif /* ATALK_VFS_H */

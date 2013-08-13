@@ -151,16 +151,16 @@ extern int sys_remove_ea(VFS_FUNC_ARGS_EA_REMOVE);
 extern int sys_ea_copyfile(VFS_FUNC_ARGS_COPYFILE);
 
 /* dbd needs access to these */
-extern int ea_open(const struct vol * restrict vol,
-                   const char * restrict uname,
+extern int ea_open(const struct vol * __restrict vol,
+                   const char * __restrict uname,
                    eaflags_t eaflags,
-                   struct ea * restrict ea);
-extern int ea_openat(const struct vol * restrict vol,
+                   struct ea * __restrict ea);
+extern int ea_openat(const struct vol * __restrict vol,
                      int dirfd,
-                     const char * restrict uname,
+                     const char * __restrict uname,
                      eaflags_t eaflags,
-                     struct ea * restrict ea);
-extern int ea_close(struct ea * restrict ea);
-extern char *ea_path(const struct ea * restrict ea, const char * restrict eaname, int macname);
+                     struct ea * __restrict ea);
+extern int ea_close(struct ea * __restrict ea);
+extern char *ea_path(const struct ea * __restrict ea, const char * __restrict eaname, int macname);
 
 #endif /* ATALK_EA_H */

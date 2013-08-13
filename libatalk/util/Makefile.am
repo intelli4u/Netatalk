@@ -7,8 +7,8 @@ AM_CFLAGS = -I$(top_srcdir)/sys
 libutil_la_SOURCES = \
 	atalk_addr.c	\
 	bprint.c	\
+	cnid.c		\
 	fault.c		\
-	ftw.c		\
 	getiface.c	\
 	locking.c   \
 	logger.c	\
@@ -23,3 +23,7 @@ libutil_la_SOURCES = \
 	strlcpy.c	\
 	volinfo.c \
 	unix.c
+
+if HAVE_ATFUNCS
+libutil_la_SOURCES += ftw.c
+endif

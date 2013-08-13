@@ -8,6 +8,7 @@ AC_SUBST(NETATALK_VERSION)
 AC_CANONICAL_SYSTEM
 AM_INIT_AUTOMAKE(netatalk, ${NETATALK_VERSION})
 AM_CONFIG_HEADER(config.h)
+AM_MAINTAINER_MODE([enable])
 
 dnl Checks for programs.
 AC_PROG_AWK
@@ -73,7 +74,13 @@ AC_FUNC_WAIT3
 AC_CHECK_FUNCS(getcwd gethostname gettimeofday getusershell mkdir rmdir select socket strdup strcasestr strstr strtoul strchr memcpy)
 AC_CHECK_FUNCS(backtrace_symbols setlocale nl_langinfo strlcpy strlcat setlinebuf dirfd pselect access pread pwrite)
 AC_CHECK_FUNCS(waitpid getcwd strdup strndup strnlen strtoul strerror chown fchown chmod fchmod chroot link mknod mknod64)
-AC_CHECK_FUNC(renameat, AC_DEFINE([_ATFILE_SOURCE], 1, AT file source)) 
+ac_neta_haveatfuncs=yes
+AC_CHECK_FUNCS(openat renameat fstatat unlinkat, , ac_neta_haveatfuncs=no)
+if test x"$ac_neta_haveatfuncs" = x"yes" ; then
+   AC_DEFINE([_ATFILE_SOURCE], 1, AT file source)
+   AC_DEFINE([HAVE_ATFUNCS], 1, whether at funcs are available)
+fi
+
 AC_CHECK_MEMBERS(struct tm.tm_gmtoff,,, [#include <time.h>])
 
 AC_CHECK_FUNC(gethostbyname,,[AC_CHECK_LIB(nsl,gethostbyname)])
@@ -1068,13 +1075,27 @@ if test x"$with_acl_support" = x"yes" ; then
 					acl_perm_t perm;
 					return acl_get_perm_np(permset_d, perm);
 				],
-				[samba_cv_HAVE_ACL_GET_PERM_NP=yes],
-				[samba_cv_HAVE_ACL_GET_PERM_NP=no])
+				[netatalk_cv_HAVE_ACL_GET_PERM_NP=yes],
+				[netatalk_cv_HAVE_ACL_GET_PERM_NP=no])
 				LIBS=$acl_LIBS
 			])
 			if test x"netatalk_cv_HAVE_ACL_GET_PERM_NP" = x"yes"; then
 				AC_DEFINE(HAVE_ACL_GET_PERM_NP,1,[Whether acl_get_perm_np() is available])
 			fi
+
+			AC_CACHE_CHECK([for acl_from_mode], netatalk_cv_HAVE_ACL_FROM_MODE,[
+				acl_LIBS=$LIBS
+				LIBS="$LIBS $ACL_LIBS"
+                AC_CHECK_FUNCS(acl_from_mode,
+				[netatalk_cv_HAVE_ACL_FROM_MODE=yes],
+				[netatalk_cv_HAVE_ACL_FROM_MODE=no])
+				LIBS=$acl_LIBS
+			])
+			if test x"netatalk_cv_HAVE_ACL_FROM_MODE" = x"yes"; then
+				AC_DEFINE(HAVE_ACL_FROM_MODE,1,[Whether acl_from_mode() is available])
+			fi
+
+
 		else
 			AC_MSG_NOTICE(ACL support is not avaliable)
 			AC_DEFINE(HAVE_NO_ACLS,1,[Whether no ACLs support is available])
@@ -1084,6 +1105,7 @@ if test x"$with_acl_support" = x"yes" ; then
 fi
 
 if test x"$with_acl_support" = x"yes" ; then
+   AC_CHECK_HEADERS([acl/libacl.h])
     AC_DEFINE(HAVE_ACLS,1,[Whether ACLs support is available])
     AC_SUBST(ACL_LIBS)
 fi
@@ -1256,6 +1278,7 @@ AM_CONDITIONAL(USE_DEBIAN, test x$sysv_style = xdebian)
 AM_CONDITIONAL(USE_UNDEF, test x$sysv_style = x)
 AM_CONDITIONAL(USE_BDB, test x$bdb_required = xyes)
 AM_CONDITIONAL(USE_APPLETALK, test x$netatalk_cv_ddp_enabled = xyes)
+AM_CONDITIONAL(HAVE_ATFUNCS, test x"$ac_neta_haveatfuncs" = x"yes")
 
 dnl --------------------- generate files
 
