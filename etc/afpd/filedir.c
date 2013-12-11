@@ -52,6 +52,10 @@ char *strchr (), *strrchr ();
 #include "filedir.h"
 #include "unix.h"
 
+/* foxconn add start, improvemennt of time machine backup rate,
+   Jonathan 2012/08/22 */
+#define TIME_MACHINE_WA 
+
 #ifdef DROPKLUDGE
 int matchfile2dirperms(
 /* Since it's kinda' big; I decided against an
@@ -645,6 +649,10 @@ int afp_delete(AFPObj *obj, char *ibuf, size_t ibuflen _U_, char *rbuf _U_, size
     }
     if ( rc == AFP_OK ) {
         curdir->d_offcnt--;
+/* foxconn add start, Jonathan 2012/08/22 */
+#ifdef TIME_MACHINE_WA 	
+		afp_bandsdid_decreaseOffcnt(curdir->d_did);
+#endif			
         setvoltime(obj, vol );
     }
 
@@ -786,7 +794,16 @@ int afp_moveandrename(AFPObj *obj, char *ibuf, size_t ibuflen _U_, char *rbuf _U
             goto exit;
         }
         curdir->d_offcnt++;
+/* foxconn add start, Jonathan 2012/08/22 */
+#ifdef TIME_MACHINE_WA 	
+		afp_bandsdid_IncreaseOffcnt(curdir->d_did);
+#endif			
+		
         sdir->d_offcnt--;
+/* foxconn add start, Jonathan 2012/08/22 */
+#ifdef TIME_MACHINE_WA 			
+		afp_bandsdid_decreaseOffcnt(sdir->d_did);
+#endif	
 #ifdef DROPKLUDGE
         if (vol->v_flags & AFPVOL_DROPBOX) {
             /* FIXME did is not always the source id */

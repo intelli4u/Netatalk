@@ -604,8 +604,13 @@ static int ads_setfilmode(const struct vol *vol, const char * name, mode_t mode,
 	/* change folder */
 	dir_mode |= DIRBITS;
     if (dir_rx_set(dir_mode)) {
+#ifdef HAVE_ACLS
         if (ochmod(name, dir_mode, st, vol_syml_opt(vol) | O_NETATALK_ACL) < 0)
             return -1;
+#else
+        if (ochmod(name, dir_mode, st, vol_syml_opt(vol)) < 0)
+            return -1;
+#endif
     }
     param.st = st;
     param.mode = file_mode;
@@ -613,8 +618,13 @@ static int ads_setfilmode(const struct vol *vol, const char * name, mode_t mode,
         return -1;
 
     if (!dir_rx_set(dir_mode)) {
+#ifdef HAVE_ACLS
         if (ochmod(name, dir_mode, st, vol_syml_opt(vol) | O_NETATALK_ACL) < 0)
             return -1;
+#else
+        if (ochmod(name, dir_mode, st, vol_syml_opt(vol)) < 0)
+            return -1;
+#endif
     }
 
     return 0;

@@ -49,6 +49,10 @@ char *strchr (), *strrchr ();
 #include "filedir.h"
 #include "unix.h"
 
+/* foxconn add start, improvemennt of time machine backup rate,
+   Jonathan 2012/08/22 */
+#define TIME_MACHINE_WA 
+
 /* the format for the finderinfo fields (from IM: Toolbox Essentials):
  * field         bytes        subfield    bytes
  * 
@@ -776,6 +780,10 @@ int afp_createfile(AFPObj *obj, char *ibuf, size_t ibuflen _U_, char *rbuf _U_, 
 
 createfile_done:
     curdir->d_offcnt++;
+/* foxconn add start, Jonathan 2012/08/22 */
+#ifdef TIME_MACHINE_WA 	
+	afp_bandsdid_IncreaseOffcnt(curdir->d_did);
+#endif	
 
 #ifdef DROPKLUDGE
     if (vol->v_flags & AFPVOL_DROPBOX) {
@@ -1379,6 +1387,10 @@ int afp_copyfile(AFPObj *obj, char *ibuf, size_t ibuflen _U_, char *rbuf _U_, si
         goto copy_exit;
     }
     curdir->d_offcnt++;
+/* foxconn add start, Jonathan 2012/08/22 */
+#ifdef TIME_MACHINE_WA 
+	afp_bandsdid_IncreaseOffcnt(curdir->d_did);
+#endif		
 
 #ifdef DROPKLUDGE
     if (vol->v_flags & AFPVOL_DROPBOX) {
@@ -1864,7 +1876,20 @@ reenumerate_id(struct vol *vol, char *name, struct dir *dir)
 
     if (dirreenumerate(dir, &st)) {
         /* we already did it once and the dir haven't been modified */
+/* foxconn add start, Jonathan 2012/08/22 */
+#ifdef TIME_MACHINE_WA 
+		if(ntohl(dir->d_did )== afp_getbandsdid()){
+
+			return afp_bandsdid_GetOffcnt();
+		}
+		else
     	return dir->d_offcnt;
+#else
+    	return dir->d_offcnt;
+#endif
+/* foxconn add end, Jonathan 2012/08/22 */
+
+
     }
     
     data.vol = vol;

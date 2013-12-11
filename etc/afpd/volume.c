@@ -2181,9 +2181,12 @@ static int volume_openDB(struct vol *volume)
             volume->v_path, volume->v_cnidscheme);
         LOG(log_error, logtype_afpd, "Reopen volume %s using in memory temporary CNID DB.",
             volume->v_path);
+printf("Reopen volume %s using in memory temporary CNID DB.",
+            volume->v_path);
         flags |= CNID_FLAG_MEMORY;
         volume->v_cdb = cnid_open (volume->v_path, volume->v_umask, "tdb", flags, NULL, NULL);
-#ifdef SERVERTEXT
+//#ifdef SERVERTEXT
+#if 0
         /* kill ourself with SIGUSR2 aka msg pending */
         if (volume->v_cdb) {
             setmessage("Something wrong with the volume's CNID DB, using temporary CNID DB instead."
