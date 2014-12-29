@@ -40,6 +40,7 @@
 #include <atalk/vfs.h>
 #include <atalk/util.h>
 #include <atalk/unix.h>
+#include <atalk/acl.h>
 
 /* close all FDs >= a specified value */
 static void closeall(int fd)
@@ -217,11 +218,15 @@ int ochmod(const char *path, mode_t mode, const struct stat *st, int options)
         if (S_ISLNK(st->st_mode))
             return 0;
 
+#ifdef HAVE_ACLS
     if (options & O_NETATALK_ACL) {
         return chmod_acl(path, mode);
     } else {
+#endif
         return chmod(path, mode);
+#ifdef HAVE_ACLS
     }
+#endif
 }
 
 /* 

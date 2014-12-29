@@ -90,9 +90,15 @@ int setfilmode(const struct vol *vol, const char *name, mode_t mode, struct stat
 
     mode |= st->st_mode & ~mask; /* keep other bits from previous mode */
 
+#ifdef HAVE_ACLS
     if (ochmod(name, mode & ~vol->v_umask, st, vol_syml_opt(vol) | O_NETATALK_ACL) < 0 && errno != EPERM ) {
         return -1;
     }
+#else
+    if (ochmod(name, mode & ~vol->v_umask, st, vol_syml_opt(vol)) < 0 && errno != EPERM ) {
+        return -1;
+    }
+#endif
     return 0;
 }
 

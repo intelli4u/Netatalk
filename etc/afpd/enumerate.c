@@ -34,6 +34,10 @@
 
 #define min(a,b)	((a)<(b)?(a):(b))
 
+/* foxconn add start, improvemennt of time machine backup rate,
+   Jonathan 2012/08/22 */
+#define TIME_MACHINE_WA 
+
 /*
  * Struct to save directory reading context in. Used to prevent
  * O(n^2) searches on a directory.
@@ -360,6 +364,10 @@ static int enumerate(AFPObj *obj _U_, char *ibuf, size_t ibuflen _U_,
             *sd.sd_last = 0;
             sd.sd_last += len + 1;
             curdir->d_offcnt--;		/* a little lie */
+/* foxconn add start, Jonathan 2012/08/22 */
+#ifdef TIME_MACHINE_WA 
+			afp_bandsdid_decreaseOffcnt(curdir->d_did);
+#endif				
             continue;
         }
 
@@ -376,11 +384,28 @@ static int enumerate(AFPObj *obj _U_, char *ibuf, size_t ibuflen _U_,
             }
             int len = strlen(s_path.u_name);
             if ((dir = dircache_search_by_name(vol, curdir, s_path.u_name, len)) == NULL) {
+/* foxconn add start, Jonathan 2012/08/22 
+   if HD have backup folder, "sparsbundle" or "bands", record did here */
+#ifdef TIME_MACHINE_WA 
+		if (strstr(s_path.u_name,"sparsebundle" ) || strstr(s_path.u_name,"bands") )
+		{
+			afp_enablechk();
+		}	
+#endif
                 if ((dir = dir_add(vol, curdir, &s_path, len)) == NULL) {
                     LOG(log_error, logtype_afpd, "enumerate(vid:%u, did:%u, name:'%s'): error adding dir: '%s'",
                         ntohs(vid), ntohl(did), o_path->u_name, s_path.u_name);
+                        #ifdef TIME_MACHINE_WA  /* foxconn add start, Jonathan 2012/08/22 */
+			afp_disablechk(); // jon_20120712, offcnt workaround
+                        #endif
                     return AFPERR_MISC;
                 }
+#ifdef TIME_MACHINE_WA  /* foxconn add start, Jonathan 2012/08/22 */
+		if (strstr(s_path.u_name,"sparsebundle" ) || strstr(s_path.u_name,"bands") )
+		{
+			afp_disablechk();
+                }
+#endif
             }
             if ((ret = getdirparams(vol, dbitmap, &s_path, dir, data + header , &esz)) != AFP_OK)
                 return( ret );

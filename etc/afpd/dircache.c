@@ -38,6 +38,10 @@
 #include "hash.h"
 
 
+/* foxconn add start, improvemennt of time machine backup rate,
+   Jonathan 2012/08/22 */
+#define TIME_MACHINE_WA 
+
 /*
  * Directory Cache
  * ===============
@@ -493,6 +497,31 @@ int dircache_add(const struct vol *vol,
     dircache_stat.added++;
     LOG(log_debug, logtype_afpd, "dircache(did:%u,'%s'): {added}",
         ntohl(dir->d_did), cfrombstr(dir->d_u_name));
+
+/* foxconn add start, Jonathan 2012/08/22 */
+#ifdef TIME_MACHINE_WA
+    /* Eric Kao, 2012/07/05 */
+    if (afp_checkflag())
+    {
+        if (!strcmp("bands", cfrombstr(dir->d_u_name)))
+        {	
+            afp_recbandsdid(ntohl(dir->d_did));
+            // for debug
+            /* LOG(log_error, logtype_afpd, "%s >> [tm_wa] record band did as %d\n",
+                __func__,ntohl(dir->d_did)); */
+        }
+
+	if (strstr(cfrombstr(dir->d_u_name),"sparsebundle" ))
+        {	
+            sleep(10);
+            afp_recSparsedid(ntohl(dir->d_did));
+            // for debug
+            /* LOG(log_error, logtype_afpd, "%s >> [tm_wa] record sparsebundle did as %d\n",
+                __func__,ntohl(dir->d_did)); */ 
+        }
+		
+    }
+#endif        
 
    AFP_ASSERT(queue_count == index_didname->hash_nodecount 
            && queue_count == dircache->hash_nodecount);

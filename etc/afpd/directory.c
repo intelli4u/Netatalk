@@ -43,6 +43,9 @@
 #include "mangle.h"
 #include "hash.h"
 
+/* foxconn add start, improvemennt of time machine backup rate,
+   Jonathan 2012/08/22 */
+#define TIME_MACHINE_WA 
 /*
  * FIXMEs, loose ends after the dircache rewrite:
  * o merge dircache_search_by_name and dir_add ??
@@ -84,6 +87,46 @@ struct path Cur_Path = {
  */
 q_t *invalid_dircache_entries;
 
+/* foxconn add start, Jonathan 2012/08/22 */
+#ifdef TIME_MACHINE_WA 
+/* Eric Kao, 2012/07/05 */
+static int check_bands_did_flag = 0;
+static int files_num = 0;
+static int bands_did = 0;
+static int sparse_did = 0;
+static unsigned int bands_offcnt =0;  /* declare as static, jon, 2012/07/31 */
+
+void  afp_bandsdid_IncreaseOffcnt(unsigned int did)
+{
+#if 0  /* if band count > 0, store it's pid for tmd daemon, jon 2012/07/31 */
+	if(ntohl(did )== afp_getbandsdid())
+	{
+		bands_offcnt++;
+		p_create_pid_file();	
+	}
+#else
+	if(ntohl(did )== afp_getbandsdid())
+		bands_offcnt++;
+#endif	
+}
+
+void  afp_bandsdid_decreaseOffcnt(unsigned int did)
+{
+	if(ntohl(did )== afp_getbandsdid())
+		bands_offcnt--;
+}
+
+unsigned int afp_bandsdid_GetOffcnt()
+{
+	return bands_offcnt;
+}
+
+void afp_bandsdid_SetOffcnt(unsigned int Val)
+{
+	bands_offcnt = Val;
+}
+#endif 
+/* foxconn add end, Jonathan 2012/08/22 */
 
 /*******************************************************************************************
  * Locals
@@ -1499,6 +1542,12 @@ int getdirparams(const struct vol *vol,
     cnid_t              pdid;
     struct stat *st = &s_path->st;
     char *upath = s_path->u_name;
+/* foxconn add start, Jonathan 2012/08/22 */
+#ifdef TIME_MACHINE_WA 
+    static int recnt_times  = 0; /* do 1 time before workaround */
+#endif
+/* foxconn add end, Jonathan 2012/08/22 */
+
 
     if ((bitmap & ((1 << DIRPBIT_ATTR)  |
                    (1 << DIRPBIT_CDATE) |
@@ -1619,6 +1668,26 @@ int getdirparams(const struct vol *vol,
         case DIRPBIT_OFFCNT :
             ashort = 0;
             /* this needs to handle current directory access rights */
+/* foxconn add start, Jonathan 2012/08/22 */
+#ifdef TIME_MACHINE_WA 
+			//if(recnt_times >= 2 && (ntohl(dir->d_did) == afp_getbandsdid()) )
+			if(recnt_times >= 1 && (ntohl(dir->d_did) == afp_getbandsdid()) ) /* set recount time >= 1, jon 2012/07/31 */
+			{
+				 ashort = (afp_bandsdid_GetOffcnt() > 0xffff)?0xffff:afp_bandsdid_GetOffcnt();
+			}	
+            else if (diroffcnt(dir, st)) {
+
+                ashort = (dir->d_offcnt > 0xffff)?0xffff:dir->d_offcnt;
+            }
+            else if ((ret = for_each_dirent(vol, upath, NULL,NULL)) >= 0) {
+				if(ntohl(dir->d_did) == afp_getbandsdid()){
+					recnt_times++;
+					afp_bandsdid_SetOffcnt((unsigned int)ret);
+				}	
+                setdiroffcnt(dir, st,  ret);
+                ashort = (dir->d_offcnt > 0xffff)?0xffff:dir->d_offcnt;
+            }
+#else
             if (diroffcnt(dir, st)) {
                 ashort = (dir->d_offcnt > 0xffff)?0xffff:dir->d_offcnt;
             }
@@ -1626,6 +1695,9 @@ int getdirparams(const struct vol *vol,
                 setdiroffcnt(dir, st,  ret);
                 ashort = (dir->d_offcnt > 0xffff)?0xffff:dir->d_offcnt;
             }
+#endif			
+/* foxconn add end, Jonathan 2012/08/22 */
+
             ashort = htons( ashort );
             memcpy( data, &ashort, sizeof( ashort ));
             data += sizeof( ashort );
@@ -2223,6 +2295,47 @@ int afp_syncdir(AFPObj *obj _U_, char *ibuf, size_t ibuflen _U_, char *rbuf _U_,
     return ( AFP_OK );
 }
 
+/* foxconn add start, Jonathan 2012/08/22 */
+#ifdef TIME_MACHINE_WA 
+/* Eric Kao, 2012/07/05 */
+void afp_enablechk(void)
+{
+    check_bands_did_flag = 1;
+}
+
+void afp_disablechk(void)
+{
+    check_bands_did_flag = 0;
+}
+
+int afp_checkflag(void)
+{
+    return check_bands_did_flag;
+}
+
+void afp_recbandsdid(int did)
+{
+	bands_did = did;
+}
+
+void afp_recSparsedid(int did)
+{
+	sparse_did = did;
+}
+int  afp_getSparsedid()
+{
+	return sparse_did;
+}
+
+int  afp_getbandsdid()
+{
+	return bands_did;
+}
+/* Eric Kao, 2012/07/05 */
+#endif 
+/* foxconn add start, Jonathan 2012/08/22 */
+
+
 int afp_createdir(AFPObj *obj, char *ibuf, size_t ibuflen _U_, char *rbuf, size_t *rbuflen)
 {
     struct adouble  ad;
@@ -2245,10 +2358,18 @@ int afp_createdir(AFPObj *obj, char *ibuf, size_t ibuflen _U_, char *rbuf, size_
 
     if (vol->v_flags & AFPVOL_RO)
         return AFPERR_VLOCK;
+/* foxconn add start, Jonathan 2012/08/22 */
+#ifdef TIME_MACHINE_WA 
+    afp_enablechk(); // Eric Kao, 2012/07/05
+#endif
 
     memcpy( &did, ibuf, sizeof( did ));
     ibuf += sizeof( did );
     if (NULL == ( dir = dirlookup( vol, did )) ) {
+/* foxconn add start, Jonathan 2012/08/22 */
+#ifdef TIME_MACHINE_WA 
+    	afp_disablechk(); // Eric Kao, 2012/07/05
+#endif
         return afp_errno; /* was AFPERR_NOOBJ */
     }
     /* for concurrent access we need to be sure we are not in the
@@ -2257,6 +2378,10 @@ int afp_createdir(AFPObj *obj, char *ibuf, size_t ibuflen _U_, char *rbuf, size_
     movecwd(vol, dir);
 
     if (NULL == ( s_path = cname( vol, dir, &ibuf )) ) {
+/* foxconn add start, Jonathan 2012/08/22 */
+#ifdef TIME_MACHINE_WA 
+    	afp_disablechk(); // Eric Kao, 2012/07/05
+#endif
         return get_afp_errno(AFPERR_PARAM);
     }
     /* cname was able to move curdir to it! */
@@ -2274,6 +2399,10 @@ int afp_createdir(AFPObj *obj, char *ibuf, size_t ibuflen _U_, char *rbuf, size_
     }
 
     curdir->d_offcnt++;
+/* foxconn add start, Jonathan 2012/08/22 */
+#ifdef TIME_MACHINE_WA 
+	afp_bandsdid_IncreaseOffcnt(curdir->d_did);
+#endif	
 
     if ((dir = dir_add(vol, curdir, s_path, strlen(s_path->u_name))) == NULL) {
         return AFPERR_MISC;
@@ -2301,6 +2430,10 @@ createdir_done:
     memcpy( rbuf, &dir->d_did, sizeof( u_int32_t ));
     *rbuflen = sizeof( u_int32_t );
     setvoltime(obj, vol );
+/* foxconn add start, Jonathan 2012/08/22 */
+#ifdef TIME_MACHINE_WA 
+    afp_disablechk(); // Eric Kao, 2012/07/05
+#endif    
     return( AFP_OK );
 }
 
