@@ -60,6 +60,11 @@
 
 #define IS_VAR(a, b) (strncmp((a), (b), 2) == 0)
 
+//Change some path by Edison 20130829
+#define T_PATH_CONFDIR		"/usr/etc/"
+#define T_PATH_STATEDIR		"/tmp/netatalk/"
+#define T_PATH_AFPDUAMPATH	"/usr/lib/netatalk/"
+
 /**************************************************************
  * Locals
  **************************************************************/
@@ -192,8 +197,8 @@ static int do_check_ea_support(const struct vol *vol)
     if ((sys_setxattr(vol->v_path, eaname, eacontent, strlen(eacontent) + 1, 0)) == 0) {
         haseas = 1;
     } else {
-        LOG(log_warning, logtype_afpd, "volume \"%s\" does not support Extended Attributes or read-only volume",
-            vol->v_localname);
+        //LOG(log_warning, logtype_afpd, "volume \"%s\" does not support Extended Attributes or read-only volume",
+        //    vol->v_localname);
         haseas = 0;
     }
 
@@ -668,7 +673,7 @@ static struct vol *creatvol(AFPObj *obj,
         if(tmpname[i] == '/') tmpname[i] = ':';
 
     bstring dbpath;
-    EC_NULL( val = atalk_iniparser_getstring(obj->iniconfig, INISEC_GLOBAL, "vol dbpath", _PATH_STATEDIR "CNID/") );
+    EC_NULL( val = atalk_iniparser_getstring(obj->iniconfig, INISEC_GLOBAL, "vol dbpath", T_PATH_STATEDIR "CNID/") );
     EC_NULL( dbpath = bformat("%s/%s/", val, tmpname) );
     EC_NULL( volume->v_dbpath = strdup(cfrombstr(dbpath)) );
     bdestroy(dbpath);
@@ -1726,9 +1731,9 @@ int afp_config_parse(AFPObj *AFPObj, char *processname)
         set_processname(processname);
 
     AFPObj->afp_version = 11;
-    options->configfile  = AFPObj->cmdlineconfigfile ? strdup(AFPObj->cmdlineconfigfile) : strdup(_PATH_CONFDIR "afp.conf");
-    options->sigconffile = strdup(_PATH_STATEDIR "afp_signature.conf");
-    options->uuidconf    = strdup(_PATH_STATEDIR "afp_voluuid.conf");
+    options->configfile  = AFPObj->cmdlineconfigfile ? strdup(AFPObj->cmdlineconfigfile) : strdup(T_PATH_CONFDIR "afp.conf");
+    options->sigconffile = strdup(T_PATH_STATEDIR "afp_signature.conf");
+    options->uuidconf    = strdup(T_PATH_STATEDIR "afp_voluuid.conf");
     options->flags       = OPTION_UUID | AFPObj->cmdlineflags;
     
     if ((config = atalk_iniparser_load(AFPObj->options.configfile)) == NULL)
@@ -1768,9 +1773,9 @@ int afp_config_parse(AFPObj *AFPObj, char *processname)
     /* figure out options w values */
     options->loginmesg      = atalk_iniparser_getstrdup(config, INISEC_GLOBAL, "login message",  NULL);
     options->guest          = atalk_iniparser_getstrdup(config, INISEC_GLOBAL, "guest account",  "nobody");
-    options->extmapfile     = atalk_iniparser_getstrdup(config, INISEC_GLOBAL, "extmap file",    _PATH_CONFDIR "extmap.conf");
+    options->extmapfile     = atalk_iniparser_getstrdup(config, INISEC_GLOBAL, "extmap file",    T_PATH_CONFDIR "extmap.conf");
     options->passwdfile     = atalk_iniparser_getstrdup(config, INISEC_GLOBAL, "passwd file",    _PATH_AFPDPWFILE);
-    options->uampath        = atalk_iniparser_getstrdup(config, INISEC_GLOBAL, "uam path",       _PATH_AFPDUAMPATH);
+    options->uampath        = atalk_iniparser_getstrdup(config, INISEC_GLOBAL, "uam path",       T_PATH_AFPDUAMPATH);
     options->uamlist        = atalk_iniparser_getstrdup(config, INISEC_GLOBAL, "uam list",       "uams_dhx.so uams_dhx2.so");
     options->port           = atalk_iniparser_getstrdup(config, INISEC_GLOBAL, "afp port",       "548");
     options->signatureopt   = atalk_iniparser_getstrdup(config, INISEC_GLOBAL, "signature",      "");
@@ -1784,7 +1789,8 @@ int afp_config_parse(AFPObj *AFPObj, char *processname)
     options->mimicmodel     = atalk_iniparser_getstrdup(config, INISEC_GLOBAL, "mimic model",    NULL);
     options->adminauthuser  = atalk_iniparser_getstrdup(config, INISEC_GLOBAL, "admin auth user",NULL);
     options->ignored_attr   = atalk_iniparser_getstrdup(config, INISEC_GLOBAL, "ignored attributes", NULL);
-    options->connections    = atalk_iniparser_getint   (config, INISEC_GLOBAL, "max connections",200);
+//    options->connections    = atalk_iniparser_getint   (config, INISEC_GLOBAL, "max connections",200);	//Edison marked
+    options->connections    = atalk_iniparser_getint   (config, INISEC_GLOBAL, "max connections",20);	//Edison modify
     options->passwdminlen   = atalk_iniparser_getint   (config, INISEC_GLOBAL, "passwd minlen",  0);
     options->tickleval      = atalk_iniparser_getint   (config, INISEC_GLOBAL, "tickleval",      30);
     options->timeout        = atalk_iniparser_getint   (config, INISEC_GLOBAL, "timeout",        4);

@@ -113,6 +113,9 @@ static uint maxvol;
 #define DEFAULTHOST  "localhost"
 #define DEFAULTPORT  "4700"
 
+//Change path by Edison in 20130923
+#define T_PATH_CNID_DBD	"/usr/sbin/cnid_dbd"
+
 struct server {
     char *v_path;
     pid_t pid;
@@ -426,7 +429,8 @@ int main(int argc, char *argv[])
     int   len, actual_len;
     pid_t pid;
     int   status;
-    char  *dbdpn = _PATH_CNID_DBD;
+//    char  *dbdpn = _PATH_CNID_DBD;	//Edison marked 20130923
+    char  *dbdpn = T_PATH_CNID_DBD;
     char  *host;
     char  *port;
     int    i;

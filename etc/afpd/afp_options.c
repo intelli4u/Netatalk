@@ -44,6 +44,11 @@
 
 #define LENGTH 512
 
+//Change some path by Edison in 20130923
+#define T_PATH_CONFDIR		"/usr/etc/"
+#define T_PATH_STATEDIR		"/tmp/netatalk/"
+#define T_PATH_AFPDUAMPATH	"/usr/lib/netatalk/"
+
 /*
  * Show version information about afpd.
  * Used by "afp -v".
@@ -184,14 +189,16 @@ static void show_version_extended(void )
 /*
  * Display compiled-in default paths
  */
+
+//Edison modify 20130923
 static void show_paths( void )
 {
-	printf( "              afp.conf:\t%s\n", _PATH_CONFDIR "afp.conf");
-	printf( "           extmap.conf:\t%s\n", _PATH_CONFDIR "extmap.conf");
-	printf( "       state directory:\t%s\n", _PATH_STATEDIR);
-	printf( "    afp_signature.conf:\t%s\n", _PATH_STATEDIR "afp_signature.conf");
-	printf( "      afp_voluuid.conf:\t%s\n", _PATH_STATEDIR "afp_voluuid.conf");
-	printf( "       UAM search path:\t%s\n", _PATH_AFPDUAMPATH );
+	printf( "              afp.conf:\t%s\n", T_PATH_CONFDIR "afp.conf");
+	printf( "           extmap.conf:\t%s\n", T_PATH_CONFDIR "extmap.conf");
+	printf( "       state directory:\t%s\n", T_PATH_STATEDIR);
+	printf( "    afp_signature.conf:\t%s\n", T_PATH_STATEDIR "afp_signature.conf");
+	printf( "      afp_voluuid.conf:\t%s\n", T_PATH_STATEDIR "afp_voluuid.conf");
+	printf( "       UAM search path:\t%s\n", T_PATH_AFPDUAMPATH );
 	printf( "  Server messages path:\t%s\n", SERVERTEXT);
 }
 
