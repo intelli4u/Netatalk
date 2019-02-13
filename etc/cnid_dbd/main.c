@@ -247,7 +247,7 @@ static void switch_to_user(char *dir)
         exit(1);
     }
     if (!getuid()) {
-        LOG(log_info, logtype_cnid, "Setting uid/gid to %i/%i", st.st_uid, st.st_gid);
+        LOG(log_debug, logtype_cnid, "Setting uid/gid to %i/%i", st.st_uid, st.st_gid);
         if (setgid(st.st_gid) < 0 || setuid(st.st_uid) < 0) {
             LOG(log_error, logtype_cnid, "uid/gid: %s", strerror(errno));
             exit(1);
@@ -282,25 +282,31 @@ static void set_signal(void)
 int main(int argc, char *argv[])
 {
     struct db_param *dbp;
-    int err = 0;
+    int err = 0, ret, delete_bdb = 0;
     int ctrlfd, clntfd;
     char *logconfig;
 
     set_processname("cnid_dbd");
 
-    /* FIXME: implement -d from cnid_metad */
-    if (argc  != 5) {
-        LOG(log_error, logtype_cnid, "main: not enough arguments");
-        exit(1);
+    while (( ret = getopt( argc, argv, "vVd")) != -1 ) {
+        switch (ret) {
+        case 'v':
+        case 'V':
+            printf("cnid_dbd (Netatalk %s)\n", VERSION);
+            return -1;
+        case 'd':
+            delete_bdb = 1;
+            break;
+        }
     }
 
-    ctrlfd = atoi(argv[2]);
-    clntfd = atoi(argv[3]);
-    logconfig = strdup(argv[4]);
-    setuplog(logconfig);
+    if (argc - optind != 4) {
+        LOG(log_error, logtype_cnid, "main: not enough arguments");
+        exit(EXIT_FAILURE);
+    }
 
     /* Load .volinfo file */
-    if (loadvolinfo(argv[1], &volinfo) == -1) {
+    if (loadvolinfo(argv[optind], &volinfo) == -1) {
         LOG(log_error, logtype_cnid, "Cant load volinfo for \"%s\"", argv[1]);
         exit(EXIT_FAILURE);
     }
@@ -312,6 +318,11 @@ int main(int argc, char *argv[])
     }
     strncpy(dbpath, volinfo.v_dbpath, MAXPATHLEN - strlen("/.AppleDB"));
     strcat(dbpath, "/.AppleDB");
+
+    ctrlfd = atoi(argv[optind + 1]);
+    clntfd = atoi(argv[optind + 2]);
+    logconfig = strdup(argv[optind + 3]);
+    setuplog(logconfig);
 
     if (vol_load_charsets(&volinfo) == -1) {
         LOG(log_error, logtype_cnid, "Error loading charsets!");
@@ -331,6 +342,16 @@ int main(int argc, char *argv[])
         if ((db_locked = get_lock(LOCK_SHRD, NULL)) != LOCK_SHRD) {
             LOG(log_error, logtype_cnid, "main: fatal db lock error");
             exit(1);
+        }
+    }
+
+    if (delete_bdb && (db_locked == LOCK_EXCL)) {
+        LOG(log_warning, logtype_cnid, "main: too many CNID db opening attempts, wiping the slate clean");
+        chdir(dbpath);
+        system("rm -f cnid2.db lock log.* __db.*");
+        if ((db_locked = get_lock(LOCK_EXCL, dbpath)) != LOCK_EXCL) {
+            LOG(log_error, logtype_cnid, "main: fatal db lock error");
+            exit(EXIT_FAILURE);
         }
     }
 

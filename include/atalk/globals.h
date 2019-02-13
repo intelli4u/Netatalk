@@ -43,6 +43,7 @@
 #define OPTION_UUID          (1 << 7)
 #define OPTION_ACL2MACCESS   (1 << 8)
 #define OPTION_NOZEROCONF    (1 << 9)
+#define OPTION_KEEPSESSIONS  (1 << 10) /* preserve sessions across master afpd restart with SIGQUIT */
 
 #ifdef FORCE_UIDGID
 /* set up a structure for this */
@@ -65,12 +66,15 @@ struct afp_options {
     int connections, transports, tickleval, timeout, server_notif, flags, dircachesize;
     int sleep;                  /* Maximum time allowed to sleep (in tickles) */
     int disconnected;           /* Maximum time in disconnected state (in tickles) */
+    int fce_fmodwait;           /* number of seconds FCE file mod events are put on hold */
     unsigned int tcp_sndbuf, tcp_rcvbuf;
     unsigned char passwdbits, passwdminlen, loginmaxfail;
     u_int32_t server_quantum;
     int dsireadbuf; /* scale factor for sizefof(dsi->buffer) = server_quantum * dsireadbuf */
     char hostname[MAXHOSTNAMELEN + 1], *server, *ipaddr, *port, *configfile;
+#ifndef NO_DDP
     struct at_addr ddpaddr;
+#endif
     char *uampath, *fqdn;
     char *pidfile;
     char *sigconffile;
@@ -98,6 +102,7 @@ struct afp_options {
     char *logconfig;
 
     char *mimicmodel;
+    char *adminauthuser;
 };
 
 #define AFPOBJ_TMPSIZ (MAXPATHLEN)
@@ -127,18 +132,16 @@ typedef struct _AFPObj {
 /* typedef for AFP functions handlers */
 typedef int (*AFPCmd)(AFPObj *obj, char *ibuf, size_t ibuflen, char *rbuf,  size_t *rbuflen);
 
-/* afp_dsi.c */
-extern AFPObj *AFPobj;
-
-extern int		afp_version;
-extern int		afp_errno;
-extern unsigned char	nologin;
-extern struct dir	*curdir;
-extern char		getwdbuf[];
-
-/* FIXME CNID */
-extern const char *Cnid_srv;
-extern const char *Cnid_port;
+/* Global variables */
+extern AFPObj             *AFPobj;
+extern int                afp_version;
+extern int                afp_errno;
+extern unsigned char      nologin;
+extern struct dir         *curdir;
+extern char               getwdbuf[];
+extern struct afp_options default_options;
+extern const char         *Cnid_srv;
+extern const char         *Cnid_port;
 
 extern int  get_afp_errno   (const int param);
 extern void afp_options_init (struct afp_options *);
@@ -164,5 +167,5 @@ extern struct dir rootParent;
 extern void afp_over_asp (AFPObj *);
 #endif /* NO_DDP */
 extern void afp_over_dsi (AFPObj *);
-
+extern void afp_over_dsi_sighandlers(AFPObj *obj);
 #endif /* globals.h */

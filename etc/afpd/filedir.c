@@ -52,10 +52,6 @@ char *strchr (), *strrchr ();
 #include "filedir.h"
 #include "unix.h"
 
-/* foxconn add start, improvemennt of time machine backup rate,
-   Jonathan 2012/08/22 */
-#define TIME_MACHINE_WA 
-
 #ifdef DROPKLUDGE
 int matchfile2dirperms(
 /* Since it's kinda' big; I decided against an
@@ -98,28 +94,33 @@ int matchfile2dirperms(
         if ( uid != sb.st_uid )
         {
             seteuid(0);
-            if (lchown(upath, sb.st_uid, sb.st_gid) < 0)
+            if (ochown(upath, sb.st_uid, sb.st_gid, vol_syml_opt(vol)) < 0)
             {
                 LOG(log_error, logtype_afpd,
                     "matchfile2dirperms(%s): Error changing owner/gid: %s",
                     upath, strerror(errno));
                 ret = AFPERR_ACCESS;
             }
-            else if ((!S_ISLNK(st->st_mode)) && (chmod(upath,(st.st_mode&~default_options.umask)| S_IRGRP| S_IROTH) < 0))
-            {
+            else if (ochmod(upath,
+                            (st.st_mode & ~default_options.umask) | S_IRGRP | S_IROTH,
+                            &sb,
+                            vol_syml_opt(vol) | O_NETATALK_ACL) < 0) {                         
                 LOG(log_error, logtype_afpd,
                     "matchfile2dirperms(%s): Error adding file read permissions: %s",
                     upath, strerror(errno));
                 ret = AFPERR_ACCESS;
             }
-            else if (lchown(adpath, sb.st_uid, sb.st_gid) < 0)
+            else if (ochown(adpath, sb.st_uid, sb.st_gid, vol_syml_opt(vol)) < 0)
             {
                 LOG(log_error, logtype_afpd,
                     "matchfile2dirperms(%s): Error changing AppleDouble owner/gid: %s",
                     adpath, strerror(errno));
                 ret = AFPERR_ACCESS;
             }
-            else if (chmod(adpath, (st.st_mode&~default_options.umask)| S_IRGRP| S_IROTH) < 0)
+            else if (ochmod(adpath,
+                            (st.st_mode & ~default_options.umask) | S_IRGRP| S_IROTH,
+                            &st,
+                            vol_syml_opt(vol) | O_NETATALK_ACL) < 0)
             {
                 LOG(log_error, logtype_afpd,
                     "matchfile2dirperms(%s):  Error adding AD file read permissions: %s",
@@ -453,7 +454,7 @@ static int moveandrename(const struct vol *vol,
     if ( !isdir ) {
         path.st_valid = 1;
         path.st_errno = errno;
-        if (of_findname(&path)) {
+        if (of_findname(vol, &path)) {
             rc = AFPERR_EXIST; /* was AFPERR_BUSY; */
         } else {
             rc = renamefile(vol, sdir_fd, oldunixname, upath, newname, adp );
@@ -618,7 +619,7 @@ int afp_delete(AFPObj *obj, char *ibuf, size_t ibuflen _U_, char *rbuf _U_, size
                 fce_register_delete_dir(cfrombstr(dname));
             bdestroy(dname);
         }
-    } else if (of_findname(s_path)) {
+    } else if (of_findname(vol, s_path)) {
         rc = AFPERR_BUSY;
     } else {
         /* it's a file st_valid should always be true
@@ -644,10 +645,6 @@ int afp_delete(AFPObj *obj, char *ibuf, size_t ibuflen _U_, char *rbuf _U_, size
     }
     if ( rc == AFP_OK ) {
         curdir->d_offcnt--;
-/* foxconn add start, Jonathan 2012/08/22 */
-#ifdef TIME_MACHINE_WA 	
-		afp_bandsdid_decreaseOffcnt(curdir->d_did);
-#endif			
         setvoltime(obj, vol );
     }
 
@@ -789,16 +786,7 @@ int afp_moveandrename(AFPObj *obj, char *ibuf, size_t ibuflen _U_, char *rbuf _U
             goto exit;
         }
         curdir->d_offcnt++;
-/* foxconn add start, Jonathan 2012/08/22 */
-#ifdef TIME_MACHINE_WA 	
-		afp_bandsdid_IncreaseOffcnt(curdir->d_did);
-#endif			
-		
         sdir->d_offcnt--;
-/* foxconn add start, Jonathan 2012/08/22 */
-#ifdef TIME_MACHINE_WA 			
-		afp_bandsdid_decreaseOffcnt(sdir->d_did);
-#endif	
 #ifdef DROPKLUDGE
         if (vol->v_flags & AFPVOL_DROPBOX) {
             /* FIXME did is not always the source id */
@@ -813,8 +801,8 @@ int afp_moveandrename(AFPObj *obj, char *ibuf, size_t ibuflen _U_, char *rbuf _U
             if (!isdir && !vol_unix_priv(vol)) {
                 int  admode = ad_mode("", 0777) | vol->v_fperm;
 
-                setfilmode(upath, admode, NULL, vol->v_umask);
-                vol->vfs->vfs_setfilmode(vol, upath, admode, NULL);
+                setfilmode(vol, upath, admode, path->st_valid ? &path->st : NULL);
+                vol->vfs->vfs_setfilmode(vol, upath, admode, path->st_valid ? &path->st : NULL);
             }
         setvoltime(obj, vol );
     }

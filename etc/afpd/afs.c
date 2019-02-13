@@ -29,10 +29,7 @@
 #include "misc.h"
 #include "unix.h"
 
-int afs_getvolspace( vol, bfree, btotal, bsize )
-struct vol	*vol;
-VolSpace	*bfree, *btotal;
-u_int32_t   *bsize;
+int afs_getvolspace(struct vol *vol, VolSpace *bfree, VolSpace *btotal, u_int32_t *bsize)
 {
     struct ViceIoctl	vi;
     struct VolumeStatus	*vs;
@@ -129,11 +126,7 @@ int afp_getdiracl(AFPObj *obj, char *ibuf, size_t ibuflen, char *rbuf, size_t *r
     #undef accessmode
 #endif
 
-void afsmode( path, ma, dir, st )
-char		*path;
-struct maccess	*ma;
-struct dir      *dir;
-struct stat     *st;
+void afsmode(const struct volume *vol, char *path, struct maccess *ma, struct dir *dir, struct stat *st)
 {
     struct ViceIoctl	vi;
     char		buf[ 1024 ];
@@ -153,7 +146,7 @@ struct stat     *st;
         return;
     }
 
-    accessmode( path, ma, dir, st );
+    accessmode(vol, path, ma, dir, st );
 
     return;
 }

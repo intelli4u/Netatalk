@@ -38,10 +38,6 @@
 #include "hash.h"
 
 
-/* foxconn add start, improvemennt of time machine backup rate,
-   Jonathan 2012/08/22 */
-#define TIME_MACHINE_WA 
-
 /*
  * Directory Cache
  * ===============
@@ -328,7 +324,7 @@ struct dir *dircache_search_by_did(const struct vol *vol, cnid_t cnid)
             return NULL;        /* (1b) */
 
         }
-        if (lstat(cfrombstr(cdir->d_fullpath), &st) != 0) {
+        if (ostat(cfrombstr(cdir->d_fullpath), &st, vol_syml_opt(vol)) != 0) {
             LOG(log_debug, logtype_afpd, "dircache(cnid:%u): {missing:\"%s\"}",
                 ntohl(cnid), cfrombstr(cdir->d_fullpath));
             (void)dir_remove(vol, cdir);
@@ -398,7 +394,7 @@ struct dir *dircache_search_by_name(const struct vol *vol,
     }
 
     if (cdir) {
-        if (lstat(cfrombstr(cdir->d_fullpath), &st) != 0) {
+        if (ostat(cfrombstr(cdir->d_fullpath), &st, vol_syml_opt(vol)) != 0) {
             LOG(log_debug, logtype_afpd, "dircache(did:%u,\"%s\"): {missing:\"%s\"}",
                 ntohl(dir->d_did), name, cfrombstr(cdir->d_fullpath));
             (void)dir_remove(vol, cdir);
@@ -466,7 +462,7 @@ int dircache_add(const struct vol *vol,
         dircache_stat.expunged++;
     }
     key.d_vid = vol->v_vid;
-    key.d_pdid = dir->d_did;
+    key.d_pdid = dir->d_pdid;
     key.d_u_name = dir->d_u_name;
     if ((hn = hash_lookup(index_didname, &key))) {
         /* Found an entry with the same DID/name, delete it */
@@ -497,31 +493,6 @@ int dircache_add(const struct vol *vol,
     dircache_stat.added++;
     LOG(log_debug, logtype_afpd, "dircache(did:%u,'%s'): {added}",
         ntohl(dir->d_did), cfrombstr(dir->d_u_name));
-
-/* foxconn add start, Jonathan 2012/08/22 */
-#ifdef TIME_MACHINE_WA
-    /* Eric Kao, 2012/07/05 */
-    if (afp_checkflag())
-    {
-        if (!strcmp("bands", cfrombstr(dir->d_u_name)))
-        {	
-            afp_recbandsdid(ntohl(dir->d_did));
-            // for debug
-            /* LOG(log_error, logtype_afpd, "%s >> [tm_wa] record band did as %d\n",
-                __func__,ntohl(dir->d_did)); */
-        }
-
-	if (strstr(cfrombstr(dir->d_u_name),"sparsebundle" ))
-        {	
-            sleep(10);
-            afp_recSparsedid(ntohl(dir->d_did));
-            // for debug
-            /* LOG(log_error, logtype_afpd, "%s >> [tm_wa] record sparsebundle did as %d\n",
-                __func__,ntohl(dir->d_did)); */ 
-        }
-		
-    }
-#endif        
 
    AFP_ASSERT(queue_count == index_didname->hash_nodecount 
            && queue_count == dircache->hash_nodecount);
@@ -623,6 +594,7 @@ int dircache_init(int reqsize)
     rootParent.d_fullpath = bfromcstr("ROOT_PARENT");
     rootParent.d_m_name = bfromcstr("ROOT_PARENT");
     rootParent.d_u_name = rootParent.d_m_name;
+    rootParent.d_rights_cache = 0xffffffff;
 
     return 0;
 }
@@ -721,5 +693,6 @@ void dircache_dump(void)
 
     fprintf(dump, "\n");
     fflush(dump);
+    fclose(dump);
     return;
 }

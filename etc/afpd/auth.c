@@ -69,22 +69,6 @@ gid_t   *groups;
 
 int ngroups;
 
-/*
- * These numbers are scattered throughout the code.
- */
-static struct afp_versions  afp_versions[] = {
-#ifndef NO_DDP
-    { "AFPVersion 1.1", 11 },
-    { "AFPVersion 2.0", 20 },
-    { "AFPVersion 2.1", 21 },
-#endif /* ! NO_DDP */
-    { "AFP2.2", 22 },
-    { "AFPX03", 30 },
-    { "AFP3.1", 31 },
-    { "AFP3.2", 32 },
-    { "AFP3.3", 33 }
-};
-
 static struct uam_mod uam_modules = {NULL, NULL, &uam_modules, &uam_modules};
 static struct uam_obj uam_login = {"", "", 0, {{NULL, NULL, NULL, NULL }}, &uam_login,
                                    &uam_login};
@@ -94,7 +78,11 @@ static struct uam_obj uam_changepw = {"", "", 0, {{NULL, NULL, NULL, NULL}}, &ua
 static struct uam_obj *afp_uam = NULL;
 
 
-void status_versions( char *data, const ASP asp, const DSI *dsi)
+void status_versions(char *data,
+#ifndef NO_DDP
+                     const ASP asp,
+#endif
+                     const DSI *dsi)
 {
     char                *start = data;
     u_int16_t           status;
@@ -256,16 +244,10 @@ static int login(AFPObj *obj, struct passwd *pwd, void (*logout)(void), int expi
     int admin = 0;
 #endif /* ADMIN_GRP */
 
-#if 0
-    set_processname("afpd");
-#endif
-
-#if 0 /* foxconn modified */
     if ( pwd->pw_uid == 0 ) {   /* don't allow root login */
         LOG(log_error, logtype_afpd, "login: root login denied!" );
         return AFPERR_NOTAUTH;
     }
-#endif
 
     LOG(log_note, logtype_afpd, "%s Login by %s",
         afp_versions[afp_version_index].av_name, pwd->pw_name);
@@ -309,32 +291,8 @@ static int login(AFPObj *obj, struct passwd *pwd, void (*logout)(void), int expi
     } /* if (obj->proto == AFPPROTO_ASP) */
 #endif
 
-    if (initgroups( pwd->pw_name, pwd->pw_gid ) < 0) {
-#ifdef RUN_AS_USER
-        LOG(log_info, logtype_afpd, "running with uid %d", geteuid());
-#else /* RUN_AS_USER */
-        LOG(log_error, logtype_afpd, "login: %s", strerror(errno));
+    if (set_groups(obj, pwd) != 0)
         return AFPERR_BADUAM;
-#endif /* RUN_AS_USER */
-
-    }
-
-    /* Basically if the user is in the admin group, we stay root */
-
-    if (( ngroups = getgroups( 0, NULL )) < 0 ) {
-        LOG(log_error, logtype_afpd, "login: %s getgroups: %s", pwd->pw_name, strerror(errno) );
-        return AFPERR_BADUAM;
-    }
-
-    if ( NULL == (groups = calloc(ngroups, GROUPS_SIZE)) ) {
-        LOG(log_error, logtype_afpd, "login: %s calloc: %d", ngroups);
-        return AFPERR_BADUAM;
-    }
-
-    if (( ngroups = getgroups( ngroups, groups )) < 0 ) {
-        LOG(log_error, logtype_afpd, "login: %s getgroups: %s", pwd->pw_name, strerror(errno) );
-        return AFPERR_BADUAM;
-    }
 
 #ifdef ADMIN_GRP
     LOG(log_debug, logtype_afpd, "obj->options.admingid == %d", obj->options.admingid);
@@ -393,28 +351,7 @@ static int login(AFPObj *obj, struct passwd *pwd, void (*logout)(void), int expi
     }
 #endif /* TRU64 */
 
-    if (ngroups > 0) {
-        #define GROUPSTR_BUFSIZE 1024
-        char groupsstr[GROUPSTR_BUFSIZE];
-        char *s = groupsstr;
-        int j = GROUPSTR_BUFSIZE, i;
-
-        int n = snprintf(groupsstr, GROUPSTR_BUFSIZE, "%u", groups[0]);
-        j -= n;
-        s += n;
-
-        for (i = 1; i < ngroups; i++) {
-            n = snprintf(s, j, ", %u", groups[i]);
-            if (n == j) {
-                /* Buffer full */
-                LOG(log_debug, logtype_afpd, "login: group string buffer overflow");
-                break;
-            }
-            j -= n;
-            s += n;
-        }
-        LOG(log_debug, logtype_afpd, "login: %u supplementary groups: %s", ngroups, groupsstr);
-    }
+    LOG(log_debug, logtype_afpd, "login: supplementary groups: %s", print_groups(ngroups, groups));
 
     /* There's probably a better way to do this, but for now, we just play root */
 #ifdef ADMIN_GRP
@@ -434,7 +371,55 @@ static int login(AFPObj *obj, struct passwd *pwd, void (*logout)(void), int expi
     save_uidgid ( &obj->uidgid );
 #endif
 
+    /* pam_umask or similar might have changed our umask */
+    (void)umask(obj->options.umask);
+
+    /* Some PAM module might have reset our signal handlers and timer, so we need to reestablish them */
+    afp_over_dsi_sighandlers(obj);
+
     return( AFP_OK );
+}
+
+#define GROUPSTR_BUFSIZE 1024
+const char *print_groups(int ngroups, gid_t *groups)
+{
+    static char groupsstr[GROUPSTR_BUFSIZE];
+    int i;
+    char *s = groupsstr;
+
+    if (ngroups == 0)
+        return "-";
+
+    for (i = 0; (i < ngroups) && (s < &groupsstr[GROUPSTR_BUFSIZE]); i++) {
+        s += snprintf(s, &groupsstr[GROUPSTR_BUFSIZE] - s, " %u", groups[i]);
+    }
+
+    return groupsstr;
+}
+
+int set_groups(AFPObj *obj, struct passwd *pwd)
+{
+    if (initgroups(pwd->pw_name, pwd->pw_gid) < 0)
+        LOG(log_error, logtype_afpd, "initgroups(%s, %d): %s", pwd->pw_name, pwd->pw_gid, strerror(errno));
+
+    if ((ngroups = getgroups(0, NULL)) < 0) {
+        LOG(log_error, logtype_afpd, "login: %s getgroups: %s", pwd->pw_name, strerror(errno));
+        return -1;
+    }
+
+    if (groups)
+        free(groups);
+    if (NULL == (groups = calloc(ngroups, GROUPS_SIZE)) ) {
+        LOG(log_error, logtype_afpd, "login: %s calloc: %d", ngroups);
+        return -1;
+    }
+
+    if ((ngroups = getgroups(ngroups, groups)) < 0 ) {
+        LOG(log_error, logtype_afpd, "login: %s getgroups: %s", pwd->pw_name, strerror(errno));
+        return -1;
+    }
+
+    return 0;
 }
 
 /* ---------------------- */
@@ -795,65 +780,6 @@ int afp_login(AFPObj *obj, char *ibuf, size_t ibuflen, char *rbuf, size_t *rbufl
     return send_reply(obj, login(obj, pwd, afp_uam->u.uam_login.logout, ((i==AFPERR_PWDEXPR)?1:0)));
 }
 
-#if 1 /* foxconn add start, tm wol workaround, jonathan 2012/07/31 */
-static int pidf_create = 0;
-#define PIDF_PATH	"/tmp/tmsync.pid"
-static int check_process_alive(FILE *fd)
-{
-	FILE *proc_fd;
-    char tmp[20]="";
-    int pid = 0;
-	fgets(tmp,sizeof(tmp),fd);
-	pid = atoi(tmp);
-	sprintf(tmp,"/proc/%d/stat",pid);
-	proc_fd = fopen(tmp,"r");
-	if(proc_fd){
-		fclose(proc_fd);
-		LOG(log_severe, logtype_afpd,"%s >> time machine %d still alive!!",__func__,pid);
-		return 1; /* alive */
-	}	
-	else
-		return 0; /* not exist */
-}
-static int p_create_pid_file()
-{
-	FILE *fd;
-	if(pidf_create){
-		LOG(log_severe, logtype_afpd,"%s >> %s already created !!",__func__,PIDF_PATH);
-		return -1;	
-	}	
-#if 1 /* if this afpd is spawn for "T_Drive", it may recive afp_login_ext(), 
-         so do next check to avoid erase real time machine pid number in tmsync.pid., jonathan 2012/08/06 */
-	fd = fopen(PIDF_PATH,"r"); /* already had tmsync.pid */
-	if(fd != NULL)
-	{
-		/* if the pid process in pid file is still alive, 
-		   don't need change it pid in tmsync.pid file  */
-		LOG(log_severe, logtype_afpd,"%s >>this may \"T_Drive \" process, %s already created !!",__func__,PIDF_PATH);   
-		if(check_process_alive(fd) == 1) 
-		{
-			fclose
-(fd);
-			return -1;
-		}	
-	}
-#endif
-	
-	fd = fopen(PIDF_PATH,"w+");
-	if(fd == NULL){
-		LOG(log_severe, logtype_afpd,"%s >> open %s fail !!",__func__,PIDF_PATH);
-		return -1;	
-	}	
-	fprintf(fd,"%d",getpid());
-	fclose(fd);
-	#if 0 /* for debug */
-		LOG(log_severe, logtype_afpd,"%s >> created %s!!",__func__,PIDF_PATH);
-		system("uptime");
-	#endif
-	pidf_create = 1;
-	return 0;
-}
-#endif /* foxconn add end, tm wol workaround, jonathan 2012/07/31 */
 /* ---------------------- */
 int afp_login_ext(AFPObj *obj, char *ibuf, size_t ibuflen, char *rbuf, size_t *rbuflen)
 {
@@ -863,10 +789,6 @@ int afp_login_ext(AFPObj *obj, char *ibuf, size_t ibuflen, char *rbuf, size_t *r
     char        type;
     u_int16_t   len16;
     char        *username;
-#if 1 /* foxconn add start, tm wol workaround, jonathan 2012/07/31 */
-	//LOG(log_severe, logtype_afpd,"%s >> enter ",__func__);
-	p_create_pid_file();
-#endif	/* foxconn add end, tm wol workaround, jonathan 2012/07/31 */
 
     *rbuflen = 0;
 

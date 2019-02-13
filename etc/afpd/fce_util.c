@@ -1,6 +1,4 @@
 /*
- * $Id: fce_api.c,v 0.01 2010-10-01 00:00:0 mw Exp $
- *
  * Copyright (c) 2010 Mark Williams
  *
  * File change event API for netatalk
@@ -26,13 +24,11 @@
 #endif /* HAVE_CONFIG_H */
 
 #include <stdio.h>
-
 #include <string.h>
 #include <stdlib.h>
 #include <errno.h>
 #include <time.h>
-
-
+#include <stdbool.h>
 #include <sys/param.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
@@ -64,11 +60,8 @@
 #define FCE_FALSE 0
 
 /* We store our connection data here */
-static char coalesce[80] = {""};
+static uint32_t coalesce = 0;
 static struct fce_history fce_history_list[FCE_HISTORY_LEN];
-
-
-
 
 /****
 * With coalesce we try to reduce the events over UDP, the eventlistener would throw these 
@@ -81,31 +74,6 @@ static struct fce_history fce_history_list[FCE_HISTORY_LEN];
 * event timeout. 
 * 
 ****/
-static int coalesce_none()
-{
-	return coalesce[0] == 0;
-}
-static int coalesce_all()
-{
-	return !strcmp( coalesce, "all" );
-}
-static int coalesce_create()
-{
-	return !strcmp( coalesce, "create" ) || coalesce_all();
-}
-static int coalesce_delete()
-{
-	return !strcmp( coalesce, "delete" ) || coalesce_all();
-}
-
-void fce_initialize_history()
-{
-	int i;
-	for (i = 0; i < FCE_HISTORY_LEN; i++)
-	{
-		memset( &fce_history_list[i], 0, sizeof(fce_history_list[i]) );
-	}
-}
 
 static long get_ms_difftime (  struct timeval *tv1, struct timeval *tv2 )
 {
@@ -115,54 +83,51 @@ static long get_ms_difftime (  struct timeval *tv1, struct timeval *tv2 )
 	return s * 1000 + us/1000;
 }
 
-int fce_handle_coalescation( char *path, int is_dir, int mode )
+/******************************************************************************
+ * Public functions follow
+ ******************************************************************************/
+
+void fce_initialize_history()
 {
-	int i;
-	if (coalesce_none())
-		return FALSE;
-
-		
-
-	// First one:
-	// After a file creation *ALWAYS* a file modification is produced
-	if (mode == FCE_FILE_CREATE)
-	{
-		if (coalesce_create())
-		{
-			return TRUE;
-		}
+	for (int i = 0; i < FCE_HISTORY_LEN; i++) {
+		memset( &fce_history_list[i], 0, sizeof(fce_history_list[i]) );
 	}
+}
 
-	/* get timestamp */
-	struct timeval tv;
-	gettimeofday(&tv, 0);
-
-
+bool fce_handle_coalescation( char *path, int is_dir, int mode )
+{
 	/* These two are used to eval our next index in history */
 	/* the history is unsorted, speed should not be a problem, length is 10 */
 	unsigned long oldest_entry = (unsigned long )((long)-1);
 	int oldest_entry_idx = -1;
+	struct timeval tv;
+
+	if (coalesce == 0)
+		return false;
+
+	/* After a file creation *ALWAYS* a file modification is produced */
+	if ((mode == FCE_FILE_CREATE) && (coalesce & FCE_COALESCE_CREATE))
+        return true;
+
+	/* get timestamp */
+	gettimeofday(&tv, 0);
 
 	/* Now detect events in the very near history */
-	for (i = 0; i < FCE_HISTORY_LEN; i++)
-	{
+	for (int i = 0; i < FCE_HISTORY_LEN; i++) {
 		struct fce_history *fh = &fce_history_list[i];
 
-		//* Not inited ? */
-		if (fh->tv.tv_sec == 0)
-		{
+		/* Not inited ? */
+		if (fh->tv.tv_sec == 0) {
 			/* we can use it for new elements */
 			oldest_entry = 0;
 			oldest_entry_idx = i;
 			continue;
 		}
 
-		//* Too old ? */
-		if (get_ms_difftime( &fh->tv, &tv ) > MAX_COALESCE_TIME_MS)
-		{
+		/* Too old ? */
+		if (get_ms_difftime( &fh->tv, &tv ) > MAX_COALESCE_TIME_MS) {
 			/* Invalidate entry */
 			fh->tv.tv_sec = 0;
-
 			oldest_entry = 0;
 			oldest_entry_idx = i;			
 			continue;
@@ -170,28 +135,23 @@ int fce_handle_coalescation( char *path, int is_dir, int mode )
 
 
 		/* If we find a parent dir wich was created we are done */
-		if (coalesce_create() && fh->mode == FCE_DIR_CREATE)
-		{
-			//* Parent dir ? */
-			if (!strncmp( fh->path, path, strlen( fh->path ) ) )
-			{
-				return TRUE;
-			}
+		if ((coalesce & FCE_COALESCE_CREATE) && (fh->mode == FCE_DIR_CREATE)) {
+			/* Parent dir ? */
+			if (!strncmp(fh->path, path, strlen(fh->path)))
+				return true;
 		}
 
 		/* If we find a parent dir we should be DELETED we are done */
-		if (coalesce_delete() && fh->is_dir && (mode == FCE_FILE_DELETE || mode == FCE_DIR_DELETE))
-		{
-			//* Parent dir ? */
-			if (!strncmp( fh->path, path, strlen( fh->path ) ) )
-			{
-				return TRUE;
-			}
+		if ((coalesce & FCE_COALESCE_DELETE)
+            && fh->is_dir
+            && (mode == FCE_FILE_DELETE || mode == FCE_DIR_DELETE)) {
+			/* Parent dir ? */
+			if (!strncmp(fh->path, path, strlen(fh->path)))
+				return true;
 		}
 
-		//* Detect oldest entry for next new entry */
-		if (oldest_entry_idx == -1 || fh->tv.tv_sec < oldest_entry)
-		{
+		/* Detect oldest entry for next new entry */
+		if (oldest_entry_idx == -1 || fh->tv.tv_sec < oldest_entry) {
 			oldest_entry = fh->tv.tv_sec;
 			oldest_entry_idx = i;
 		}
@@ -204,20 +164,37 @@ int fce_handle_coalescation( char *path, int is_dir, int mode )
 	strncpy( fce_history_list[oldest_entry_idx].path, path, MAXPATHLEN);
 
 	/* we have to handle this event */
-	return FALSE;
+	return false;
 }
 
 /*
- *
  * Set event coalescation to reduce number of events sent over UDP 
  * all|delete|create
- *
- *
- * */
+ */
 
-int fce_set_coalesce( char *coalesce_opt )
+int fce_set_coalesce(char *opt)
 {
-	strncpy( coalesce, coalesce_opt, sizeof(coalesce) - 1 ); 
+    char *e;
+    char *p;
+    
+    if (opt == NULL)
+        return AFPERR_PARAM;
+
+    e = strdup(opt);
+
+    for (p = strtok(e, ","); p; p = strtok(NULL, ",")) {
+        if (strcmp(p, "all") == 0) {
+            coalesce = FCE_COALESCE_ALL;
+        } else if (strcmp(p, "delete") == 0) {
+            coalesce = FCE_COALESCE_DELETE;
+        } else if (strcmp(p, "create") == 0) {
+            coalesce = FCE_COALESCE_CREATE;
+        }
+    }
+
+    free(e);
+
+    return AFP_OK;
 }
 
 

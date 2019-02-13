@@ -49,10 +49,6 @@ char *strchr (), *strrchr ();
 #include "filedir.h"
 #include "unix.h"
 
-/* foxconn add start, improvemennt of time machine backup rate,
-   Jonathan 2012/08/22 */
-#define TIME_MACHINE_WA 
-
 /* the format for the finderinfo fields (from IM: Toolbox Essentials):
  * field         bytes        subfield    bytes
  * 
@@ -119,7 +115,7 @@ void *get_finderinfo(const struct vol *vol, const char *upath, struct adouble *a
         }
     }
 
-    if (islink){
+    if (islink && !vol_syml_opt(vol)) {
         u_int16_t linkflag;
         memcpy(&linkflag, (char *)data + FINDERINFO_FRFLAGOFF, 2);
         linkflag |= htons(FINDERINFO_ISALIAS);
@@ -268,21 +264,17 @@ restart:
                         vol->v_path);
                     vol->v_cdb = cnid_open(vol->v_path, vol->v_umask, "tdb", flags, NULL, NULL);
                     if (vol->v_cdb) {
-                        /* deactivate cnid caching/storing in AppleDouble files and set ro mode*/
                         vol->v_flags &= ~AFPVOL_CACHE;
-                        vol->v_flags |= AFPVOL_RO;
-#ifdef SERVERTEXT
-                        /* kill ourself with SIGUSR2 aka msg pending */
-                        setmessage("Something wrong with the volume's CNID DB, using temporary CNID DB instead."
-                                   "Check server messages for details. Switching to read-only mode.");
-                        kill(getpid(), SIGUSR2);
-#endif
-                        goto restart; /* not try again with the temp CNID db */
+                        if (!(vol->v_flags & AFPVOL_TM)) {
+                            vol->v_flags |= AFPVOL_RO;
+                            setmessage("Something wrong with the volume's CNID DB, using temporary CNID DB instead."
+                                       "Check server messages for details. Switching to read-only mode.");
+                            kill(getpid(), SIGUSR2);
+                        }
+                        goto restart; /* now try again with the temp CNID db */
                     } else {
-#ifdef SERVERTEXT
                         setmessage("Something wrong with the volume's CNID DB, using temporary CNID DB failed too!"
                                    "Check server messages for details, can't recover from this state!");
-#endif
                     }
                 }
                 afp_errno = AFPERR_MISC;
@@ -398,9 +390,9 @@ int getmetadata(struct vol *vol,
             /* FIXME do we want a visual clue if the file is read only
              */
             struct maccess	ma;
-            accessmode( ".", &ma, dir , NULL);
+            accessmode(vol, ".", &ma, dir , NULL);
             if ((ma.ma_user & AR_UWRITE)) {
-            	accessmode( upath, &ma, dir , st);
+            	accessmode(vol, upath, &ma, dir , st);
             	if (!(ma.ma_user & AR_UWRITE)) {
                 	ashort |= htons(ATTRBIT_NOWRITE);
                 }
@@ -567,7 +559,7 @@ int getmetadata(struct vol *vol,
             break;
         case FILPBIT_UNIXPR :
             /* accessmode may change st_mode with ACLs */
-            accessmode( upath, &ma, dir , st);
+            accessmode(vol, upath, &ma, dir , st);
 
             aint = htonl(st->st_uid);
             memcpy( data, &aint, sizeof( aint ));
@@ -709,7 +701,7 @@ int afp_createfile(AFPObj *obj, char *ibuf, size_t ibuflen _U_, char *rbuf _U_, 
     upath = s_path->u_name;
     
     /* if upath is deleted we already in trouble anyway */
-    if ((of = of_findname(s_path))) {
+    if ((of = of_findname(vol, s_path))) {
         adp = of->of_ad;
     } else {
         ad_init(&ad, vol->v_adouble, vol->v_ad_options);
@@ -743,6 +735,7 @@ int afp_createfile(AFPObj *obj, char *ibuf, size_t ibuflen _U_, char *rbuf _U_, 
             return( AFPERR_ACCESS );
         case EDQUOT:
         case ENOSPC :
+	    LOG(log_info, logtype_afpd, "afp_createfile: DISK FULL");
             return( AFPERR_DFULL );
         default :
             return( AFPERR_PARAM );
@@ -783,10 +776,6 @@ int afp_createfile(AFPObj *obj, char *ibuf, size_t ibuflen _U_, char *rbuf _U_, 
 
 createfile_done:
     curdir->d_offcnt++;
-/* foxconn add start, Jonathan 2012/08/22 */
-#ifdef TIME_MACHINE_WA 	
-	afp_bandsdid_IncreaseOffcnt(curdir->d_did);
-#endif	
 
 #ifdef DROPKLUDGE
     if (vol->v_flags & AFPVOL_DROPBOX) {
@@ -882,6 +871,9 @@ int setfilparams(struct vol *vol,
     u_int16_t           bitmap = f_bitmap;
     u_int32_t           cdate,bdate;
     u_char              finder_buf[32];
+    int fp;
+    ssize_t len;
+    char symbuf[MAXPATHLEN+1];
 
 #ifdef DEBUG
     LOG(log_debug9, logtype_afpd, "begin setfilparams:");
@@ -923,29 +915,32 @@ int setfilparams(struct vol *vol,
             break;
         case FILPBIT_FINFO :
             change_mdate = 1;
-            memcpy(finder_buf, buf, 32 );
-            if (memcmp(buf,"slnkrhap",8)==0 && !S_ISLNK(path->st.st_mode)){
-            // SLFINFO
-                int fp;
-                ssize_t len;
-                int erc=1;
-                char buf[PATH_MAX+1];
-                if ((fp=open(path->u_name,O_RDONLY))>=0){
-                    if ((len=read(fp,buf,PATH_MAX+1))){
-                        if (unlink(path->u_name)==0){
-                            buf[len]=0;
-                            erc = symlink(buf, path->u_name);
-                            if (!erc)
-                                of_stat(path);
-                        }
-                    }
-                    close(fp);
-                }
-                if (erc!=0){
-                    err=AFPERR_BITMAP;
+            if (memcmp(buf,"slnkrhap",8) == 0
+                && !(S_ISLNK(path->st.st_mode))
+                && !(vol->v_flags & AFPVOL_FOLLOWSYM)) {
+                /* request to turn this into a symlink */
+                if ((fp = open(path->u_name, O_RDONLY)) == -1) {
+                    err = AFPERR_MISC;
                     goto setfilparam_done;
                 }
+                len = read(fp, symbuf, MAXPATHLEN);
+                close(fp);
+                if (!(len > 0)) {
+                    err = AFPERR_MISC;
+                    goto setfilparam_done;
+                }
+                if (unlink(path->u_name) != 0) {
+                    err = AFPERR_MISC;
+                    goto setfilparam_done;
+                }
+                symbuf[len] = 0;
+                if (symlink(symbuf, path->u_name) != 0) {
+                    err = AFPERR_MISC;
+                    goto setfilparam_done;
+                }
+                of_stat(vol, path);
             }
+            memcpy(finder_buf, buf, 32 );
             buf += 32;
             break;
         case FILPBIT_UNIXPR :
@@ -1384,10 +1379,6 @@ int afp_copyfile(AFPObj *obj, char *ibuf, size_t ibuflen _U_, char *rbuf _U_, si
         goto copy_exit;
     }
     curdir->d_offcnt++;
-/* foxconn add start, Jonathan 2012/08/22 */
-#ifdef TIME_MACHINE_WA 
-	afp_bandsdid_IncreaseOffcnt(curdir->d_did);
-#endif		
 
 #ifdef DROPKLUDGE
     if (vol->v_flags & AFPVOL_DROPBOX) {
@@ -1567,7 +1558,8 @@ int copyfile(const struct vol *s_vol,
     if (ad_reso_fileno(adp) == -1 || 0 == (err = copy_fork(ADEID_RFORK, &add, adp))){
         /* copy the data fork */
         if ((err = copy_fork(ADEID_DFORK, &add, adp)) == 0) {
-            err = d_vol->vfs->vfs_copyfile(d_vol, sfd, src, dst);
+            if (ad_meta_fileno(adp) != -1)
+                err = d_vol->vfs->vfs_copyfile(d_vol, sfd, src, dst);
         }
     }
 
@@ -1608,6 +1600,7 @@ done:
     case EDQUOT:
     case EFBIG:
     case ENOSPC:
+	LOG(log_info, logtype_afpd, "copyfile: DISK FULL");
         return AFPERR_DFULL;
     case ENOENT:
         return AFPERR_NOOBJ;
@@ -1820,7 +1813,7 @@ static int reenumerate_loop(struct dirent *de, char *mname _U_, void *data)
     cnid_t        did  = param->did;
     cnid_t	  aint;
     
-    if ( lstat(de->d_name, &path.st)<0 )
+    if (ostat(de->d_name, &path.st, vol_syml_opt(vol)) < 0)
         return 0;
     
     /* update or add to cnid */
@@ -1865,26 +1858,13 @@ reenumerate_id(struct vol *vol, char *name, struct dir *dir)
     }
     
     /* FIXME use of_statdir ? */
-    if (lstat(name, &st)) {
+    if (ostat(name, &st, vol_syml_opt(vol))) {
 	return -1;
     }
 
     if (dirreenumerate(dir, &st)) {
         /* we already did it once and the dir haven't been modified */
-/* foxconn add start, Jonathan 2012/08/22 */
-#ifdef TIME_MACHINE_WA 
-		if(ntohl(dir->d_did )== afp_getbandsdid()){
-
-			return afp_bandsdid_GetOffcnt();
-		}
-		else
     	return dir->d_offcnt;
-#else
-    	return dir->d_offcnt;
-#endif
-/* foxconn add end, Jonathan 2012/08/22 */
-
-
     }
     
     data.vol = vol;
@@ -1957,7 +1937,7 @@ retry:
 
     memset(&path, 0, sizeof(path));
     path.u_name = upath;
-    if ( of_stat(&path) < 0 ) {
+    if (of_stat(vol, &path) < 0 ) {
 #ifdef ESTALE
         /* with nfs and our working directory is deleted */
 	if (errno == ESTALE) {
@@ -2052,7 +2032,7 @@ int afp_deleteid(AFPObj *obj _U_, char *ibuf, size_t ibuflen _U_, char *rbuf _U_
     }
 
     err = AFP_OK;
-    if ((movecwd(vol, dir) < 0) || (lstat(upath, &st) < 0)) {
+    if ((movecwd(vol, dir) < 0) || (ostat(upath, &st, vol_syml_opt(vol)) < 0)) {
         switch (errno) {
         case EACCES:
         case EPERM:
@@ -2088,7 +2068,7 @@ delete:
 }
 
 /* ------------------------------ */
-static struct adouble *find_adouble(struct path *path, struct ofork **of, struct adouble *adp)
+static struct adouble *find_adouble(const struct vol *vol, struct path *path, struct ofork **of, struct adouble *adp)
 {
     int             ret;
 
@@ -2115,7 +2095,7 @@ static struct adouble *find_adouble(struct path *path, struct ofork **of, struct
         return NULL;
     }
     
-    if ((*of = of_findname(path))) {
+    if ((*of = of_findname(vol, path))) {
         /* reuse struct adouble so it won't break locks */
         adp = (*of)->of_ad;
     }
@@ -2206,7 +2186,7 @@ int afp_exchangefiles(AFPObj *obj, char *ibuf, size_t ibuflen _U_, char *rbuf _U
     }
     
     ad_init(&ads, vol->v_adouble, vol->v_ad_options);
-    if (!(adsp = find_adouble( path, &s_of, &ads))) {
+    if (!(adsp = find_adouble(vol, path, &s_of, &ads))) {
         return afp_errno;
     }
 
@@ -2239,7 +2219,7 @@ int afp_exchangefiles(AFPObj *obj, char *ibuf, size_t ibuflen _U_, char *rbuf _U
     }
 
     ad_init(&add, vol->v_adouble, vol->v_ad_options);
-    if (!(addp = find_adouble( path, &d_of, &add))) {
+    if (!(addp = find_adouble(vol, path, &d_of, &add))) {
         err = afp_errno;
         goto err_exchangefile;
     }
@@ -2297,10 +2277,10 @@ int afp_exchangefiles(AFPObj *obj, char *ibuf, size_t ibuflen _U_, char *rbuf _U
     if (did)
         cnid_delete(vol->v_cdb, did);
 
-    if ((did && ( (crossdev && lstat( upath, &srcst) < 0) || 
+    if ((did && ( (crossdev && ostat(upath, &srcst, vol_syml_opt(vol)) < 0) || 
                 cnid_update(vol->v_cdb, did, &srcst, curdir->d_did,upath, dlen) < 0))
        ||
-       (sid && ( (crossdev && lstat(p, &destst) < 0) ||
+        (sid && ( (crossdev && ostat(p, &destst, vol_syml_opt(vol)) < 0) ||
                 cnid_update(vol->v_cdb, sid, &destst, sdir->d_did,supath, slen) < 0))
     ) {
         switch (errno) {

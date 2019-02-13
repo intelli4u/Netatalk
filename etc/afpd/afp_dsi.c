@@ -24,6 +24,7 @@
 #include <sys/stat.h>
 #endif /* HAVE_SYS_STAT_H */
 #include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <arpa/inet.h>
 #include <setjmp.h>
 #include <time.h>
@@ -47,6 +48,10 @@
 #warning UIDGID
 #include "uid.h"
 #endif /* FORCE_UIDGID */
+
+#ifndef SOL_TCP
+#define SOL_TCP IPPROTO_TCP
+#endif
 
 /* 
  * We generally pass this from afp_over_dsi to all afp_* funcs, so it should already be
@@ -75,7 +80,8 @@ static sigjmp_buf recon_jmp;
 static void afp_dsi_close(AFPObj *obj)
 {
     DSI *dsi = obj->handle;
-
+    sigset_t sigs;
+    
     close(obj->ipc_fd);
     obj->ipc_fd = -1;
 
@@ -92,8 +98,13 @@ static void afp_dsi_close(AFPObj *obj)
     }
 
     close_all_vol();
-    if (obj->logout)
+
+    if (obj->logout) {
+        /* Block sigs, PAM/systemd/whoever might send us a SIG??? in (*obj->logout)() -> pam_close_session() */
+        sigfillset(&sigs);
+        pthread_sigmask(SIG_BLOCK, &sigs, NULL);
         (*obj->logout)();
+    }
 
     LOG(log_note, logtype_afpd, "AFP statistics: %.2f KB read, %.2f KB written",
         dsi->read_count/1024.0, dsi->write_count/1024.0);
@@ -327,7 +338,7 @@ static void alarm_handler(int sig _U_)
     }
 
     /* if we're in the midst of processing something, don't die. */        
-    if ( !(dsi->flags & DSI_RUNNING) && (dsi->tickle >= AFPobj->options.timeout)) {
+    if (dsi->tickle >= AFPobj->options.timeout) {
         LOG(log_error, logtype_afpd, "afp_alarm: child timed out, entering disconnected state");
         if (dsi_disconnect(dsi) != 0)
             afp_dsi_die(EXITERR_CLNT);
@@ -372,23 +383,10 @@ static void pending_request(DSI *dsi)
     }
 }
 
-/* -------------------------------------------
- afp over dsi. this never returns. 
-*/
-void afp_over_dsi(AFPObj *obj)
+void afp_over_dsi_sighandlers(AFPObj *obj)
 {
     DSI *dsi = (DSI *) obj->handle;
-    int rc_idx;
-    u_int32_t err, cmd;
-    u_int8_t function;
     struct sigaction action;
-
-    AFPobj = obj;
-    dsi->AFPobj = obj;
-    obj->exit = afp_dsi_die;
-    obj->reply = (int (*)()) dsi_cmdreply;
-    obj->attention = (int (*)(void *, AFPUserBytes)) dsi_attention;
-    dsi->tickle = 0;
 
     memset(&action, 0, sizeof(action));
     sigfillset(&action.sa_mask);
@@ -452,6 +450,25 @@ void afp_over_dsi(AFPObj *obj)
         afp_dsi_die(EXITERR_SYS);
     }
 #endif /* DEBUGGING */
+}
+
+/* -------------------------------------------
+ afp over dsi. this never returns. 
+*/
+void afp_over_dsi(AFPObj *obj)
+{
+    DSI *dsi = (DSI *) obj->handle;
+    int rc_idx;
+    u_int32_t err, cmd;
+    u_int8_t function;
+
+    AFPobj = obj;
+    obj->exit = afp_dsi_die;
+    obj->reply = (int (*)()) dsi_cmdreply;
+    obj->attention = (int (*)(void *, AFPUserBytes)) dsi_attention;
+    dsi->tickle = 0;
+
+    afp_over_dsi_sighandlers(obj);
 
     if (dircache_init(obj->options.dircachesize) != 0)
         afp_dsi_die(EXITERR_SYS);
@@ -476,6 +493,10 @@ void afp_over_dsi(AFPObj *obj)
         }
     }
 
+    /* set TCP_NODELAY */
+    int flag = 1;
+    setsockopt(dsi->socket, SOL_TCP, TCP_NODELAY, &flag, sizeof(flag));
+
     /* get stuck here until the end */
     while (1) {
         if (sigsetjmp(recon_jmp, 1) != 0)
@@ -483,7 +504,7 @@ void afp_over_dsi(AFPObj *obj)
             continue;
 
         /* Blocking read on the network socket */
-        cmd = dsi_receive(dsi);
+        cmd = dsi_stream_receive(dsi);
 
         if (cmd == 0) {
             /* cmd == 0 is the error condition */
@@ -500,9 +521,17 @@ void afp_over_dsi(AFPObj *obj)
                 exit(0);
             }
 
+#if 0
             /*  got ECONNRESET in read from client => exit*/
             if (dsi->flags & DSI_GOT_ECONNRESET) {
                 LOG(log_note, logtype_afpd, "afp_over_dsi: client connection reset");
+                afp_dsi_close(obj);
+                exit(0);
+            }
+#endif
+
+            if (dsi->flags & DSI_RECONINPROG) {
+                LOG(log_note, logtype_afpd, "afp_over_dsi: failed reconnect");
                 afp_dsi_close(obj);
                 exit(0);
             }
@@ -511,7 +540,8 @@ void afp_over_dsi(AFPObj *obj)
             if (dsi_disconnect(dsi) != 0)
                 afp_dsi_die(EXITERR_CLNT);
 
-            pause(); /* gets interrupted by SIGALARM or SIGURG tickle */
+            while (dsi->flags & DSI_DISCONNECTED)
+                pause(); /* gets interrupted by SIGALARM or SIGURG tickle */
             continue; /* continue receiving until disconnect timer expires
                        * or a primary reconnect succeeds  */
         }
@@ -583,7 +613,7 @@ void afp_over_dsi(AFPObj *obj)
 
             /* AFP replay cache */
             rc_idx = dsi->clientID % REPLAYCACHE_SIZE;
-            LOG(log_debug, logtype_afpd, "DSI request ID: %u", dsi->clientID);
+            LOG(log_debug, logtype_dsi, "DSI request ID: %u", dsi->clientID);
 
             if (replaycache[rc_idx].DSIreqID == dsi->clientID
                 && replaycache[rc_idx].AFPcommand == function) {
@@ -631,9 +661,7 @@ void afp_over_dsi(AFPObj *obj)
             if (dsi->flags & DSI_NOREPLY) {
                 dsi->flags &= ~DSI_NOREPLY;
                 break;
-            }
-
-            if (!dsi_cmdreply(dsi, err)) {
+            } else if (!dsi_cmdreply(dsi, err)) {
                 LOG(log_error, logtype_afpd, "dsi_cmdreply(%d): %s", dsi->socket, strerror(errno) );
                 if (dsi_disconnect(dsi) != 0)
                     afp_dsi_die(EXITERR_CLNT);
@@ -688,7 +716,7 @@ void afp_over_dsi(AFPObj *obj)
         }
         pending_request(dsi);
 
-        vol_fce_tm_event();
+        fce_pending_events(obj);
     }
 
     /* error */

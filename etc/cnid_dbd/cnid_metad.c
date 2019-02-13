@@ -40,6 +40,7 @@
 #include <signal.h>
 #include <sys/types.h>
 #include <sys/time.h>
+#include <sys/resource.h>
 #include <sys/wait.h>
 #include <sys/uio.h>
 #include <sys/un.h>
@@ -101,7 +102,7 @@ static volatile sig_atomic_t sigchild = 0;
 static uint maxvol;
 
 #define MAXSPAWN   3                   /* Max times respawned in.. */
-#define TESTTIME   42                  /* this much seconds apfd client tries to  *
+#define TESTTIME   10                  /* this much seconds apfd client tries to  *
                                         * to reconnect every 5 secondes, catch it */
 #define MAXVOLS    4096
 #define DEFAULTHOST  "localhost"
@@ -111,7 +112,7 @@ struct server {
     struct volinfo *volinfo;
     pid_t pid;
     time_t tm;                    /* When respawned last */
-    int count;                    /* Times respawned in the last TESTTIME secondes */
+    unsigned int count;           /* Times respawned in the last TESTTIME secondes */
     int control_fd;               /* file descriptor to child cnid_dbd process */
 };
 
@@ -196,25 +197,30 @@ static int maybe_start_dbd(char *dbdpn, struct volinfo *volinfo)
             return -1;
         }
     } else {
-        /* we have a slot but no process, check for respawn too fast */
-        if ( (t < (up->tm + TESTTIME)) /* We're in the respawn time window */
-             &&
-             (up->count > MAXSPAWN) ) { /* ...and already tried to fork too often */
-            LOG(log_maxdebug, logtype_cnid, "maybe_start_dbd: respawn too fast just exiting");
-            return -1; /* just exit, dont sleep, because we might have work to do for another client  */
-        }
-        if ( t >= (up->tm + TESTTIME) ) { /* out of respawn too fast windows reset the count */
-            LOG(log_maxdebug, logtype_cnid, "maybe_start_dbd: respawn window ended");
-            up->tm = t;
-            up->count = 0;
+        /* we have a slot but no process */
+        if (up->count > 0) {
+            /* check for respawn too fast */
+            if (t < (up->tm + TESTTIME)) {
+                /* We're in the respawn time window */
+                if (up->count > MAXSPAWN) {
+                    /* ...and already tried to fork too often */
+                    LOG(log_maxdebug, logtype_cnid, "maybe_start_dbd: respawning too fast");
+                    return -1; /* just exit, dont sleep, because we might have work to do for another client  */
+                }
+            } else {
+                /* out of respawn too fast windows reset the count */
+                LOG(log_info, logtype_cnid, "maybe_start_dbd: respawn window ended");
+                up->count = 0;
+            }
         }
         up->count++;
-        LOG(log_maxdebug, logtype_cnid, "maybe_start_dbd: respawn count now is: %u", up->count);
+        up->tm = t;
+        LOG(log_maxdebug, logtype_cnid, "maybe_start_dbd: respawn count: %u", up->count);
         if (up->count > MAXSPAWN) {
             /* We spawned too fast. From now until the first time we tried + TESTTIME seconds
                we will just return -1 above */
-            LOG(log_maxdebug, logtype_cnid, "maybe_start_dbd: reached MAXSPAWN threshhold");
-        }
+            LOG(log_info, logtype_cnid, "maybe_start_dbd: reached MAXSPAWN threshhold");
+       }
     }
 
     /* 
@@ -252,13 +258,12 @@ static int maybe_start_dbd(char *dbdpn, struct volinfo *volinfo)
         sprintf(buf2, "%i", rqstfd);
 
         if (up->count == MAXSPAWN) {
-            /* there's a pb with the db inform child
-             * it will run recover, delete the db whatever
-             */
-            LOG(log_error, logtype_cnid, "try with -d %s", up->volinfo->v_path);
+            /* there's a pb with the db inform child, it will delete the db */
+            LOG(log_warning, logtype_cnid,
+                "Multiple attempts to start CNID db daemon for \"%s\" failed, wiping the slate clean...",
+                up->volinfo->v_path);
             ret = execlp(dbdpn, dbdpn, "-d", volpath, buf1, buf2, logconfig, NULL);
-        }
-        else {
+        } else {
             ret = execlp(dbdpn, dbdpn, volpath, buf1, buf2, logconfig, NULL);
         }
         /* Yikes! We're still here, so exec failed... */
@@ -450,8 +455,12 @@ int main(int argc, char *argv[])
 
     set_processname("cnid_metad");
 
-    while (( cc = getopt( argc, argv, "ds:p:h:u:g:l:f:")) != -1 ) {
+    while (( cc = getopt( argc, argv, "vVds:p:h:u:g:l:f:")) != -1 ) {
         switch (cc) {
+        case 'v':
+        case 'V':
+            printf("cnid_metad (Netatalk %s)\n", VERSION);
+            return -1;
         case 'd':
             debug = 1;
             break;
@@ -490,6 +499,17 @@ int main(int argc, char *argv[])
         }
     }
 
+    /* Check for PID lockfile */
+    if (check_lockfile("cnid_metad", _PATH_CNID_METAD_LOCK))
+        return -1;
+
+    if (!debug && daemonize(0, 0) != 0)
+        exit(EXITERR_SYS);
+
+    /* Create PID lockfile */
+    if (create_lockfile("cnid_metad", _PATH_CNID_METAD_LOCK))
+        return -1;
+
     if (loglevel) {
         strlcpy(logconfig + 8, loglevel, 13);
         free(loglevel);
@@ -507,16 +527,6 @@ int main(int argc, char *argv[])
     }
 
     (void)setlimits();
-
-    /* Check PID lockfile and become a daemon */
-    switch(server_lock("cnid_metad", _PATH_CNID_METAD_LOCK, debug)) {
-    case -1: /* error */
-        daemon_exit(EXITERR_SYS);
-    case 0: /* child */
-        break;
-    default: /* server */
-        exit(0);
-    }
 
     if ((srvfd = tsockfd_create(host, port, 10)) < 0)
         daemon_exit(1);
@@ -556,11 +566,15 @@ int main(int argc, char *argv[])
                 }
             }
             if (WIFEXITED(status)) {
-                LOG(log_info, logtype_cnid, "cnid_dbd pid %i exited with exit code %i",
+                LOG(log_info, logtype_cnid, "cnid_dbd[%i] exited with exit code %i",
                     pid, WEXITSTATUS(status));
+            } else {
+                /* cnid_dbd did a clean exit probably on idle timeout, reset bookkeeping */
+                srv[i].tm = 0;
+                srv[i].count = 0;
             }
-            else if (WIFSIGNALED(status)) {
-                LOG(log_info, logtype_cnid, "cnid_dbd pid %i exited with signal %i",
+            if (WIFSIGNALED(status)) {
+                LOG(log_info, logtype_cnid, "cnid_dbd[%i] received signal %i",
                     pid, WTERMSIG(status));
             }
             sigchild = 0;

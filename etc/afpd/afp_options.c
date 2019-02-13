@@ -142,6 +142,8 @@ void afp_options_free(struct afp_options *opt,
 	free(opt->logconfig);
 	if (opt->mimicmodel && (opt->mimicmodel != save->mimicmodel))
 	free(opt->mimicmodel);
+	if (opt->adminauthuser && (opt->adminauthuser != save->adminauthuser))
+	free(opt->adminauthuser);
 }
 
 /* initialize options */
@@ -193,6 +195,8 @@ void afp_options_init(struct afp_options *options)
     options->tcp_rcvbuf = 0;    /* 0 means don't change OS default */
     options->dsireadbuf = 12;
 	options->mimicmodel = NULL;
+    options->fce_fmodwait = 60; /* put fmod events 60 seconds on hold */
+    options->adminauthuser = NULL;
 }
 
 /* parse an afpd.conf line. i'm doing it this way because it's
@@ -240,6 +244,10 @@ int afp_options_parseline(char *buf, struct afp_options *options)
         options->flags |= OPTION_ANNOUNCESSH;
     if (strstr(buf, " -noacl2maccess"))
         options->flags &= ~OPTION_ACL2MACCESS;
+    if (strstr(buf, " -keepsessions")) {
+        default_options.flags |= OPTION_KEEPSESSIONS;
+        options->flags |= OPTION_KEEPSESSIONS;
+    }
 
     /* passwd bits */
     if (strstr(buf, " -nosavepassword"))
@@ -322,9 +330,9 @@ int afp_options_parseline(char *buf, struct afp_options *options)
     }
 
     if ((c = getoption(buf, "-sleep"))) {
-        options->sleep = atoi(c) *120;
+        options->disconnected = options->sleep = atoi(c) * 120;
         if (options->sleep <= 4) {
-            options->sleep = 4;
+            options->disconnected = options->sleep = 4;
         }
     }
 
@@ -423,8 +431,10 @@ int afp_options_parseline(char *buf, struct afp_options *options)
 
     if ((c = getoption(buf, "-port")))
         options->port = strdup(c);
+#ifndef NO_DDP
     if ((c = getoption(buf, "-ddpaddr")))
         atalk_aton(c, &options->ddpaddr);
+#endif
     if ((c = getoption(buf, "-signature")) && (opt = strdup(c)))
         options->signatureopt = opt;
 
@@ -498,8 +508,14 @@ int afp_options_parseline(char *buf, struct afp_options *options)
 		fce_set_events(c);
 	}
 
+    if ((c = getoption(buf, "-fceholdfmod")))
+        options->fce_fmodwait = atoi(c);
+
     if ((c = getoption(buf, "-mimicmodel")) && (opt = strdup(c)))
        options->mimicmodel = opt;
+
+    if ((c = getoption(buf, "-adminauthuser")) && (opt = strdup(c)))
+       options->adminauthuser = opt;
 
     return 1;
 }
@@ -510,6 +526,8 @@ int afp_options_parseline(char *buf, struct afp_options *options)
  */
 static void show_version( void )
 {
+	int num, i;
+
 	printf( "afpd %s - Apple Filing Protocol (AFP) daemon of Netatalk\n\n", VERSION );
 
 	puts( "This program is free software; you can redistribute it and/or modify it under" );
@@ -519,9 +537,12 @@ static void show_version( void )
 
 	puts( "afpd has been compiled with support for these features:\n" );
 
-	printf( "        AFP3.x support:\tYes\n" );
-        printf( "        TCP/IP Support:\t" );
-        puts( "Yes" );
+	num = sizeof( afp_versions ) / sizeof( afp_versions[ 0 ] );
+	printf( "          AFP versions:\t" );
+	for ( i = 0; i < num; i++ ) {
+		printf( "%d.%d ", afp_versions[ i ].av_number/10, afp_versions[ i ].av_number%10);
+	}
+	puts( "" );
 
 	printf( "DDP(AppleTalk) Support:\t" );
 #ifdef NO_DDP
@@ -575,8 +596,10 @@ static void show_version_extended(void )
 #endif
 
 	printf( "      Zeroconf support:\t" );
-#ifdef USE_ZEROCONF
-	puts( "Yes" );
+#if defined (HAVE_MDNS)
+	puts( "mDNSResponder" );
+#elif defined (HAVE_AVAHI)
+	puts( "Avahi" );
 #else
 	puts( "No" );
 #endif
@@ -630,15 +653,15 @@ static void show_version_extended(void )
 	puts( "No" );
 #endif
 
+	printf( "            EA support:\t" );
+	puts( EA_MODULES );
+
 	printf( "           ACL support:\t" );
 #ifdef HAVE_ACLS
 	puts( "Yes" );
 #else
 	puts( "No" );
 #endif
-
-	printf( "            EA support:\t" );
-	puts( EA_MODULES );
 
 	printf( "          LDAP support:\t" );
 #ifdef HAVE_LDAP
@@ -696,11 +719,14 @@ int afp_options_parse(int ac, char **av, struct afp_options *options)
         *p = '\0';
     }
 
+#ifdef ultrix
     if (NULL == ( p = strrchr( av[ 0 ], '/' )) ) {
         p = av[ 0 ];
     } else {
         p++;
     }
+    openlog( p, LOG_PID ); /* ultrix only */
+#endif /* ultrix */
 
     while (EOF != ( c = getopt( ac, av, OPTIONS )) ) {
         switch ( c ) {
@@ -766,7 +792,7 @@ int afp_options_parse(int ac, char **av, struct afp_options *options)
             exit( 0 );
             break;
         case 'h':	/* usage */
-            show_usage( p );
+            show_usage("afpd");
             exit( 0 );
             break;
         case 'I':
@@ -791,12 +817,6 @@ int afp_options_parse(int ac, char **av, struct afp_options *options)
         show_usage( p );
         exit( 2 );
     }
-
-#ifdef ultrix
-    openlog( p, LOG_PID ); /* ultrix only */
-#else
-    set_processname(p);
-#endif /* ultrix */
 
     return 1;
 }

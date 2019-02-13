@@ -9,6 +9,7 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <inttypes.h>
 
 /* STDC check */
 #ifdef STDC_HEADERS
@@ -52,14 +53,13 @@ char *strchr (), *strrchr ();
  */
 int ustatfs_getvolspace(const struct vol *vol, VolSpace *bfree, VolSpace *btotal, u_int32_t *bsize)
 {
-    VolSpace maxVolSpace = (~(VolSpace)0);
+    VolSpace maxVolSpace = UINT64_MAX;
 
 #ifdef ultrix
     struct fs_data	sfs;
 #else /*ultrix*/
     struct statfs	sfs;
 #endif /*ultrix*/
-
 
     if ( statfs( vol->v_path, &sfs ) < 0 ) {
         LOG(log_error, logtype_afpd, "ustatfs_getvolspace unable to stat %s", vol->v_path);
@@ -169,19 +169,19 @@ mode_t mode;
  *
  * dir parameter is used by AFS
  */
-void accessmode(char *path, struct maccess *ma, struct dir *dir _U_, struct stat *st)
+void accessmode(const struct vol *vol, char *path, struct maccess *ma, struct dir *dir _U_, struct stat *st)
 {
     struct stat     sb;
 
     ma->ma_user = ma->ma_owner = ma->ma_world = ma->ma_group = 0;
     if (!st) {
-        if (lstat(path, &sb) != 0)
+        if (ostat(path, &sb, vol_syml_opt(vol)) != 0)
             return;
         st = &sb;
     }
     utommode( st, ma );
 #ifdef HAVE_ACLS
-    acltoownermode(path, st, ma);
+    acltoownermode(vol, path, st, ma);
 #endif
 }
 
@@ -234,6 +234,7 @@ mode_t mtoumode(struct maccess *ma)
 
 #define EXEC_MODE (S_IXGRP | S_IXUSR | S_IXOTH)
 
+/* Using chmod_acl() instead of ochmod is ok here */
 int setdeskmode(const mode_t mode)
 {
     char		wd[ MAXPATHLEN + 1];
@@ -277,23 +278,23 @@ int setdeskmode(const mode_t mode)
             *m = '\0';
             strcat( modbuf, subp->d_name );
             /* XXX: need to preserve special modes */
-            if (lstat(modbuf, &st) < 0) {
+            if (stat(modbuf, &st) < 0) {
                 LOG(log_error, logtype_afpd, "setdeskmode: stat %s: %s",fullpathname(modbuf), strerror(errno) );
                 continue;
             }
 
             if (S_ISDIR(st.st_mode)) {
-                if ( chmod( modbuf,  (DIRBITS | mode) & ~default_options.umask ) < 0 && errno != EPERM ) {
+                if ( chmod_acl( modbuf,  (DIRBITS | mode) & ~default_options.umask ) < 0 && errno != EPERM ) {
                      LOG(log_error, logtype_afpd, "setdeskmode: chmod %s: %s",fullpathname(modbuf), strerror(errno) );
                 }
-            } else if ( chmod( modbuf,  mode & ~(default_options.umask | EXEC_MODE) ) < 0 && errno != EPERM ) {
+            } else if ( chmod_acl( modbuf,  mode & ~(default_options.umask | EXEC_MODE) ) < 0 && errno != EPERM ) {
                 LOG(log_error, logtype_afpd, "setdeskmode: chmod %s: %s",fullpathname(modbuf), strerror(errno) );
             }
 
         }
         closedir( sub );
         /* XXX: need to preserve special modes */
-        if ( chmod( deskp->d_name,  (DIRBITS | mode) & ~default_options.umask ) < 0 && errno != EPERM ) {
+        if ( chmod_acl( deskp->d_name,  (DIRBITS | mode) & ~default_options.umask ) < 0 && errno != EPERM ) {
             LOG(log_error, logtype_afpd, "setdeskmode: chmod %s: %s",fullpathname(deskp->d_name), strerror(errno) );
         }
     }
@@ -303,7 +304,7 @@ int setdeskmode(const mode_t mode)
         return -1;
     }
     /* XXX: need to preserve special modes */
-    if ( chmod( ".AppleDesktop",  (DIRBITS | mode) & ~default_options.umask ) < 0 && errno != EPERM ) {
+    if ( chmod_acl( ".AppleDesktop",  (DIRBITS | mode) & ~default_options.umask ) < 0 && errno != EPERM ) {
         LOG(log_error, logtype_afpd, "setdeskmode: chmod %s: %s", fullpathname(".AppleDesktop"),strerror(errno) );
     }
     return( 0 );
@@ -313,7 +314,7 @@ int setdeskmode(const mode_t mode)
 int setfilunixmode (const struct vol *vol, struct path* path, mode_t mode)
 {
     if (!path->st_valid) {
-        of_stat(path);
+        of_stat(vol, path);
     }
 
     if (path->st_errno) {
@@ -322,7 +323,7 @@ int setfilunixmode (const struct vol *vol, struct path* path, mode_t mode)
         
     mode |= vol->v_fperm;
 
-    if (setfilmode( path->u_name, mode, &path->st, vol->v_umask) < 0)
+    if (setfilmode(vol, path->u_name, mode, &path->st) < 0)
         return -1;
     /* we need to set write perm if read set for resource fork */
     return vol->vfs->vfs_setfilmode(vol, path->u_name, mode, &path->st);
@@ -384,7 +385,7 @@ int setdirmode(const struct vol *vol, const char *name, mode_t mode)
         if ( *dirp->d_name == '.' && (!osx || dirp->d_name[1] != '_')) {
             continue;
         }
-        if ( lstat( dirp->d_name, &st ) < 0 ) {
+        if (ostat(dirp->d_name, &st, vol_syml_opt(vol)) < 0 ) {
             LOG(log_error, logtype_afpd, "setdirmode: stat %s: %s",dirp->d_name, strerror(errno) );
             continue;
         }
@@ -392,7 +393,8 @@ int setdirmode(const struct vol *vol, const char *name, mode_t mode)
         if (!S_ISDIR(st.st_mode)) {
            int setmode = (osx && *dirp->d_name == '.')?hf_mode:mode;
 
-           if (setfilmode(dirp->d_name, setmode, &st, vol->v_umask) < 0) {
+           if (setfilmode(vol, dirp->d_name, setmode, &st) < 0) {
+               closedir( dir );
                 LOG(log_error, logtype_afpd, "setdirmode: chmod %s: %s",dirp->d_name, strerror(errno) );
                 return -1;
            }
@@ -478,14 +480,14 @@ int setfilowner(const struct vol *vol, const uid_t uid, const gid_t gid, struct 
 {
 
     if (!path->st_valid) {
-        of_stat(path);
+        of_stat(vol, path);
     }
 
     if (path->st_errno) {
         return -1;
     }
 
-    if ( lchown( path->u_name, uid, gid ) < 0 && errno != EPERM ) {
+    if (ochown( path->u_name, uid, gid, vol_syml_opt(vol)) < 0 && errno != EPERM ) {
         LOG(log_debug, logtype_afpd, "setfilowner: chown %d/%d %s: %s",
             uid, gid, path->u_name, strerror(errno) );
 	return -1;
@@ -519,13 +521,13 @@ int setdirowner(const struct vol *vol, const char *name, const uid_t uid, const 
         if ( *dirp->d_name == '.' && (!osx || dirp->d_name[1] != '_')) {
             continue;
         }
-        if ( lstat( dirp->d_name, &st ) < 0 ) {
+        if (ostat(dirp->d_name, &st, vol_syml_opt(vol)) < 0 ) {
             LOG(log_error, logtype_afpd, "setdirowner: stat %s: %s",
                 fullpathname(dirp->d_name), strerror(errno) );
             continue;
         }
         if (( st.st_mode & S_IFMT ) == S_IFREG ) {
-            if ( lchown( dirp->d_name, uid, gid ) < 0 && errno != EPERM ) {
+            if (ochown(dirp->d_name, uid, gid, vol_syml_opt(vol)) < 0 && errno != EPERM ) {
                 LOG(log_debug, logtype_afpd, "setdirowner: chown %s: %s",
                     fullpathname(dirp->d_name), strerror(errno) );
                 /* return ( -1 ); Sometimes this is okay */
@@ -538,10 +540,10 @@ int setdirowner(const struct vol *vol, const char *name, const uid_t uid, const 
         return -1;
     }
     
-    if ( lstat( ".", &st ) < 0 ) {
+    if (ostat(".", &st, vol_syml_opt(vol)) < 0 ) {
         return( -1 );
     }
-    if ( gid && gid != st.st_gid && lchown( ".", uid, gid ) < 0 && errno != EPERM ) {
+    if ( gid && gid != st.st_gid && ochown(".", uid, gid, vol_syml_opt(vol)) < 0 && errno != EPERM ) {
         LOG(log_debug, logtype_afpd, "setdirowner: chown %d/%d %s: %s",
             uid, gid, fullpathname("."), strerror(errno) );
     }
@@ -565,7 +567,7 @@ static int recursive_chown(const char *path, uid_t uid, gid_t gid) {
 	return -1;
     }
 
-    if (lstat(path, &sbuf) < 0) {
+    if (stat(path, &sbuf) < 0) {
 	LOG(log_error, logtype_afpd, "cannot chown() file [%s] (uid = %d): %s", path, uid, strerror(errno));
 	return -1;
     }

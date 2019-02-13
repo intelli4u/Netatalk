@@ -118,7 +118,7 @@ static char *mtoupath(const struct vol *vol, const char *mpath)
  *
  * Verifies magic and version.
  */
-static int unpack_header(struct ea * __restrict ea)
+static int unpack_header(struct ea * restrict ea)
 {
     int ret = 0;
     unsigned int count = 0;
@@ -197,7 +197,7 @@ exit:
  *
  * adjust ea->ea_count in case an ea entry deletetion is detected
  */
-static int pack_header(struct ea * __restrict ea)
+static int pack_header(struct ea * restrict ea)
 {
     unsigned int count = 0, eacount = 0;
     uint16_t uint16;
@@ -293,8 +293,8 @@ static int pack_header(struct ea * __restrict ea)
  * Grow array ea->ea_entries[]. If ea->ea_entries is still NULL, start allocating.
  * Otherwise realloc and put entry at the end. Increments ea->ea_count.
  */
-static int ea_addentry(struct ea * __restrict ea,
-                       const char * __restrict attruname,
+static int ea_addentry(struct ea * restrict ea,
+                       const char * restrict attruname,
                        size_t attrsize,
                        int bitmap)
 {
@@ -384,8 +384,8 @@ error:
  * We therefor currently just break with an error.
  * On return the header file is still r/w locked.
  */
-static int create_ea_header(const char * __restrict uname,
-                            struct ea * __restrict ea)
+static int create_ea_header(const char * restrict uname,
+                            struct ea * restrict ea)
 {
     int fd = -1, err = 0;
     char *ptr;
@@ -440,9 +440,9 @@ exit:
  * Creates/overwrites EA file.
  *
  */
-static int write_ea(const struct ea * __restrict ea,
-                    const char * __restrict attruname,
-                    const char * __restrict ibuf,
+static int write_ea(const struct ea * restrict ea,
+                    const char * restrict attruname,
+                    const char * restrict ibuf,
                     size_t attrsize)
 {
     int fd = -1, ret = AFP_OK;
@@ -508,19 +508,21 @@ exit:
  * Marks it as unused just by freeing name and setting it to NULL.
  * ea_close and pack_buffer must honor this.
  */
-static int ea_delentry(struct ea * __restrict ea, const char * __restrict attruname)
+static int ea_delentry(struct ea * restrict ea, const char * restrict attruname)
 {
     int ret = 0;
     unsigned int count = 0;
 
     if (ea->ea_count == 0) {
-        LOG(log_error, logtype_afpd, "ea_delentry('%s'): illegal ea_count of 0 on deletion");
+        LOG(log_error, logtype_afpd, "ea_delentry('%s'): illegal ea_count of 0 on deletion",
+            attruname);
         return -1;
     }
 
     while (count < ea->ea_count) {
         /* search matching EA */
-        if (strcmp(attruname, (*ea->ea_entries)[count].ea_name) == 0) {
+        if ((*ea->ea_entries)[count].ea_name &&
+            strcmp(attruname, (*ea->ea_entries)[count].ea_name) == 0) {
             free((*ea->ea_entries)[count].ea_name);
             (*ea->ea_entries)[count].ea_name = NULL;
 
@@ -547,7 +549,7 @@ static int ea_delentry(struct ea * __restrict ea, const char * __restrict attrun
  *
  * Returns: 0 on success, -1 on error
  */
-static int delete_ea_file(const struct ea * __restrict ea, const char *eaname)
+static int delete_ea_file(const struct ea * restrict ea, const char *eaname)
 {
     int ret = 0;
     char *eafile;
@@ -595,7 +597,7 @@ static int delete_ea_file(const struct ea * __restrict ea, const char *eaname)
  * Dirs: "dir" -> "dir/.AppleDouble/.Parent::EA"
  * "file" with EA "myEA" -> "file/.AppleDouble/file::EA:myEA"
  */
-char *ea_path(const struct ea * __restrict ea, const char * __restrict eaname, int macname)
+char *ea_path(const struct ea * restrict ea, const char * restrict eaname, int macname)
 {
     char *adname;
     static char pathbuf[MAXPATHLEN + 1];
@@ -644,10 +646,10 @@ char *ea_path(const struct ea * __restrict ea, const char * __restrict eaname, i
  * file is either read or write locked depending on the open flags.
  * When you're done with struct ea you must call ea_close on it.
  */
-int ea_open(const struct vol * __restrict vol,
-            const char * __restrict uname,
+int ea_open(const struct vol * restrict vol,
+            const char * restrict uname,
             eaflags_t eaflags,
-            struct ea * __restrict ea)
+            struct ea * restrict ea)
 {
     int ret = 0;
     char *eaname;
@@ -818,11 +820,11 @@ exit:
  * file is either read or write locked depending on the open flags.
  * When you're done with struct ea you must call ea_close on it.
  */
-int ea_openat(const struct vol * __restrict vol,
+int ea_openat(const struct vol * restrict vol,
               int dirfd,
-              const char * __restrict uname,
+              const char * restrict uname,
               eaflags_t eaflags,
-              struct ea * __restrict ea)
+              struct ea * restrict ea)
 {
     int ret = 0;
     int cwdfd = -1;
@@ -869,7 +871,7 @@ exit:
  * Flushes and then closes and frees all resouces held by ea handle.
  * Pack data in ea into ea_data, then write ea_data to disk
  */
-int ea_close(struct ea * __restrict ea)
+int ea_close(struct ea * restrict ea)
 {
     int ret = 0; 
     unsigned int count = 0;
@@ -892,7 +894,7 @@ int ea_close(struct ea * __restrict ea)
             if (ea->ea_count == 0) {
                 /* Check if EA header exists and remove it */
                 eaname = ea_path(ea, NULL, 0);
-                if ((lstatat(ea->dirfd, eaname, &st)) == 0) {
+                if ((statat(ea->dirfd, eaname, &st)) == 0) {
                     if ((netatalk_unlinkat(ea->dirfd, eaname)) != 0) {
                         LOG(log_error, logtype_afpd, "ea_close('%s'): unlink: %s",
                             eaname, strerror(errno));
@@ -1569,7 +1571,7 @@ int ea_chown(VFS_FUNC_ARGS_CHOWN)
         }
     }
 
-    if ((lchown(ea_path(&ea, NULL, 0), uid, gid)) != 0) {
+    if ((ochown(ea_path(&ea, NULL, 0), uid, gid, vol_syml_opt(vol))) != 0) {
         switch (errno) {
         case EPERM:
         case EACCES:
@@ -1586,7 +1588,7 @@ int ea_chown(VFS_FUNC_ARGS_CHOWN)
             ret = AFPERR_MISC;
             goto exit;
         }
-        if ((lchown(eaname, uid, gid)) != 0) {
+        if ((ochown(eaname, uid, gid, vol_syml_opt(vol))) != 0) {
             switch (errno) {
             case EPERM:
             case EACCES:
@@ -1630,7 +1632,7 @@ int ea_chmod_file(VFS_FUNC_ARGS_SETFILEMODE)
     }
 
     /* Set mode on EA header file */
-    if ((setfilmode(ea_path(&ea, NULL, 0), ea_header_mode(mode), NULL, vol->v_umask)) != 0) {
+    if ((setfilmode(vol, ea_path(&ea, NULL, 0), ea_header_mode(mode), NULL)) != 0) {
         LOG(log_error, logtype_afpd, "ea_chmod_file('%s'): %s", ea_path(&ea, NULL, 0), strerror(errno));
         switch (errno) {
         case EPERM:
@@ -1649,7 +1651,7 @@ int ea_chmod_file(VFS_FUNC_ARGS_SETFILEMODE)
             ret = AFPERR_MISC;
             goto exit;
         }
-        if ((setfilmode(eaname, ea_mode(mode), NULL, vol->v_umask)) != 0) {
+        if ((setfilmode(vol, eaname, ea_mode(mode), NULL)) != 0) {
             LOG(log_error, logtype_afpd, "ea_chmod_file('%s'): %s", eaname, strerror(errno));
             switch (errno) {
             case EPERM:
@@ -1706,7 +1708,7 @@ int ea_chmod_dir(VFS_FUNC_ARGS_SETDIRUNIXMODE)
     }
 
     /* Set mode on EA header */
-    if ((setfilmode(ea_path(&ea, NULL, 0), ea_header_mode(mode), NULL, vol->v_umask)) != 0) {
+    if ((setfilmode(vol, ea_path(&ea, NULL, 0), ea_header_mode(mode), NULL)) != 0) {
         LOG(log_error, logtype_afpd, "ea_chmod_dir('%s'): %s", ea_path(&ea, NULL, 0), strerror(errno));
         switch (errno) {
         case EPERM:
@@ -1736,7 +1738,7 @@ int ea_chmod_dir(VFS_FUNC_ARGS_SETDIRUNIXMODE)
             ret = AFPERR_MISC;
             goto exit;
         }
-        if ((setfilmode(eaname, ea_mode(mode), NULL, vol->v_umask)) != 0) {
+        if ((setfilmode(vol, eaname, ea_mode(mode), NULL)) != 0) {
             LOG(log_error, logtype_afpd, "ea_chmod_dir('%s'): %s", eaname, strerror(errno));
             switch (errno) {
             case EPERM:

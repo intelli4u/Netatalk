@@ -34,10 +34,6 @@
 
 #define min(a,b)	((a)<(b)?(a):(b))
 
-/* foxconn add start, improvemennt of time machine backup rate,
-   Jonathan 2012/08/22 */
-#define TIME_MACHINE_WA 
-
 /*
  * Struct to save directory reading context in. Used to prevent
  * O(n^2) searches on a directory.
@@ -287,7 +283,7 @@ static int enumerate(AFPObj *obj _U_, char *ibuf, size_t ibuflen _U_,
     if ( sindex == 1 || curdir->d_did != sd.sd_did || vid != sd.sd_vid ) {
         sd.sd_last = sd.sd_buf;
         /* if dir was in the cache we don't have the inode */
-        if (( !o_path->st_valid && lstat( ".", &o_path->st ) < 0 ) ||
+        if (( !o_path->st_valid && ostat(".", &o_path->st, vol_syml_opt(vol)) < 0 ) ||
             (ret = for_each_dirent(vol, ".", enumerate_loop, (void *)&sd)) < 0) 
         {
             LOG(log_error, logtype_afpd, "enumerate: loop error: %s (%d)", strerror(errno), errno);
@@ -351,7 +347,7 @@ static int enumerate(AFPObj *obj _U_, char *ibuf, size_t ibuflen _U_,
         }
         memset(&s_path, 0, sizeof(s_path));
         s_path.u_name = sd.sd_last;
-        if (of_stat( &s_path) < 0 ) {
+        if (of_stat(vol, &s_path) < 0 ) {
             /*
              * Somebody else plays with the dir, well it can be us with 
             * "Empty Trash..."
@@ -364,10 +360,6 @@ static int enumerate(AFPObj *obj _U_, char *ibuf, size_t ibuflen _U_,
             *sd.sd_last = 0;
             sd.sd_last += len + 1;
             curdir->d_offcnt--;		/* a little lie */
-/* foxconn add start, Jonathan 2012/08/22 */
-#ifdef TIME_MACHINE_WA 
-			afp_bandsdid_decreaseOffcnt(curdir->d_did);
-#endif				
             continue;
         }
 
@@ -384,28 +376,11 @@ static int enumerate(AFPObj *obj _U_, char *ibuf, size_t ibuflen _U_,
             }
             int len = strlen(s_path.u_name);
             if ((dir = dircache_search_by_name(vol, curdir, s_path.u_name, len)) == NULL) {
-/* foxconn add start, Jonathan 2012/08/22 
-   if HD have backup folder, "sparsbundle" or "bands", record did here */
-#ifdef TIME_MACHINE_WA 
-		if (strstr(s_path.u_name,"sparsebundle" ) || strstr(s_path.u_name,"bands") )
-		{
-			afp_enablechk();
-		}	
-#endif
                 if ((dir = dir_add(vol, curdir, &s_path, len)) == NULL) {
                     LOG(log_error, logtype_afpd, "enumerate(vid:%u, did:%u, name:'%s'): error adding dir: '%s'",
                         ntohs(vid), ntohl(did), o_path->u_name, s_path.u_name);
-                        #ifdef TIME_MACHINE_WA  /* foxconn add start, Jonathan 2012/08/22 */
-			afp_disablechk(); // jon_20120712, offcnt workaround
-                        #endif
                     return AFPERR_MISC;
                 }
-#ifdef TIME_MACHINE_WA  /* foxconn add start, Jonathan 2012/08/22 */
-		if (strstr(s_path.u_name,"sparsebundle" ) || strstr(s_path.u_name,"bands") )
-		{
-			afp_disablechk();
-                }
-#endif
             }
             if ((ret = getdirparams(vol, dbitmap, &s_path, dir, data + header , &esz)) != AFP_OK)
                 return( ret );

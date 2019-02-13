@@ -263,11 +263,11 @@ struct passwd *uam_getname(void *private, char *name, const int len)
         if ((p = strchr(pwent->pw_gecos, ',')))
             *p = '\0';
 
-	if ((size_t)-1 == ( gecoslen = convert_string(obj->options.unixcharset, CH_UCS2, 
-				pwent->pw_gecos, -1, user, sizeof(username))) )
-		continue;
-	if ((size_t)-1 == ( pwnamelen = convert_string(obj->options.unixcharset, CH_UCS2, 
-				pwent->pw_name, -1, pwname, sizeof(username))) )
+	gecoslen = convert_string(obj->options.unixcharset, CH_UCS2, 
+				pwent->pw_gecos, -1, user, sizeof(username));
+	pwnamelen = convert_string(obj->options.unixcharset, CH_UCS2, 
+				pwent->pw_name, -1, pwname, sizeof(username));
+	if ((size_t)-1 == gecoslen && (size_t)-1 == pwnamelen)
 		continue;
 
 
@@ -488,12 +488,13 @@ int uam_afp_read(void *handle, char *buf, size_t *buflen,
         return AFPERR_PARAM;
 
     switch (obj->proto) {
+#ifndef NO_DDP
     case AFPPROTO_ASP:
         if ((len = asp_wrtcont(obj->handle, buf, buflen )) < 0)
             goto uam_afp_read_err;
         return action(handle, buf, *buflen);
         break;
-
+#endif
     case AFPPROTO_DSI:
         len = dsi_writeinit(obj->handle, buf, *buflen);
         if (!len || ((len = action(handle, buf, len)) < 0)) {
@@ -508,6 +509,8 @@ int uam_afp_read(void *handle, char *buf, size_t *buflen,
             }
         }
         break;
+    default:
+        return -1;
     }
     return 0;
 

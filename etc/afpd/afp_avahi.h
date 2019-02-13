@@ -24,12 +24,6 @@
 
 #include "afp_config.h"
 
-#define AFP_DNS_SERVICE_TYPE "_afpovertcp._tcp"
-#define ADISK_SERVICE_TYPE "_adisk._tcp"
-#define DEV_INFO_SERVICE_TYPE "_device-info._tcp"
-
-#define MAXINSTANCENAMELEN 63
-
 struct context {
 	/* Avahi stuff */
   int               thread_running;
@@ -41,9 +35,7 @@ struct context {
 };
 
 /* prototype definitions */
-void av_zeroconf_setup(const AFPConfig *configs);
-int av_zeroconf_run(void);
+void av_zeroconf_register(const AFPConfig *configs);
 int av_zeroconf_unregister(void);
-void av_zeroconf_shutdown(void);
 
 #endif   /* AFPD_AVAHI_H */

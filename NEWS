@@ -1,4 +1,145 @@
-Changes in 2.2
+Changes in 2.2.5
+================
+* FIX: Fix errors searching volumes
+* NEW: Configurable symlink handling with a new volume option
+       'followsymlinks'. Setting the option causes afpd to follow
+       symlinks on the server side.
+* UPD: Reload groups when reloading volumes. FR #71.
+* FIX: Fix a possible crash in cname() where cname_mtouname calls
+       dirlookup() where the curdir is freed because the dircache
+       detected a dev/inode cache difference and evicted the object
+       from the cache. Fixes bug #498.
+* FIX: Change default FinderInfo for directories to be all 0, fixes
+       bug 514.
+
+Changes in 2.2.4
+================
+
+* FIX: Missing UAM links
+* FIX: Lockup in AFP logout on Fedora 17
+* FIX: Reset signal handlers and alarm timer after successfull PAM
+       authentication. Fixes a problem with AFP disconnects caused
+       by pam_smbpass.so messing with our handlers and timer.
+* FIX: afpd: Fix a possible problem with sendfile on Solaris derived
+       platforms
+
+Changes in 2.2.3
+================
+
+* NEW: afpd: support for mdnsresponder
+* NEW: afpd: new LDAP config option ldap_uuid_string
+* UPD: based on Unicode 6.1.0
+* UPD: experimental systemd service files: always run both afpd and cnid_metad
+* UPD: afpd: Ensure our umask is not altered by eg pam_umask
+* UPD: afpd: Use GSS_C_NO_NAME as server principal when Kerberos options -fqdn
+       and -krb5service are not set, from Jamie Gilbertson
+* UPD: afpd: Changed behaviour for TimeMachine volumes in case there's a problem
+       talking to the CNID daemons. Previously the volume was flagged read-only
+       and an AFP message was sent to the client. As this might result in
+       TimeMachine assuming the backup sparse bundle is damaged, we now just
+       switch the CNID database to an in-memory tdb without the additional stuff.
+* FIX: afpd: sendfile() on FreeBSD was broken, courtesy of Denis Ahrens
+* FIX: afpd: Dont use searchdb when doing partial name search
+* FIX: afpd: Fix a possible bug handling disconnected sessions,
+       NetAFP Bug ID #16
+* FIX: afpd: Close IPC fds in afpd session child inherited from the afpd
+       master process
+* FIX: dbd: Don't remove BerkeleyDB if it's still in use by eg cnid_dbd, fixes
+       bug introduced in 2.2.2
+* FIX: debian initscript: start avahi-daemon (if available) before atalkd
+* FIX: Zeroconf could not advertise non-ASCII time machine volume name
+
+Changes in 2.2.2
+================
+
+* NEW: afpd: New option "adminauthuser". Specifying eg "-adminauthuser root"
+       whenever a normal user login fails, afpd tries to authenticate as
+       the specified adminauthuser. If this succeeds, a normal session is
+       created for the original connecting user. Said differently: if you
+       know the password of adminauthuser, you can authenticate as any other
+       user.
+* NEW: configure option "--enable-suse-systemd" for openSUSE12.1 and later.
+       "--enable-redhat-systemd" and "--enable-suse-systemd" are same as
+       "--enable-systemd".
+       "--enable-suse" is renamed "--enable-suse-sysv".
+* NEW: experimental systemd service files in distrib/systemd/
+* UPD: afpd: Enhanced POSIX ACL mapping semantics, from Laura Mueller
+* UPD: afpd: Reset options every time a :DEFAULT: line is found in a
+       AppleVolumes file
+* UPD: afpd: Convert passwords from legacy encoding (wire format) to host
+       encoding, NetAFP Bug ID #14
+* UPD: afpd: Don't set ATTRBIT_SHARED flag for directories
+* UPD: afpd: Use sendfile() on Solaris and FreeBSD for sending data
+* UPD: afpd: Faster volume used size calculation for "volsizelimit" option,
+       cf man AppleVolume.default for details
+* FIX: afpd: ACL access checking
+* FIX: afpd: Fix an error when duplicating files that lacked an AppleDouble
+       file which lead to a possible Finder crash
+* FIX: afpd: Read-only filesystems lead to afpd processes running as root
+* FIX: afpd: Fix for filesystem without NFSv4 ACL support on Solaris
+* FIX: afpd: Fix catsearch bug, NetAFP Bug ID #12
+* FIX: afpd: Fix dircache bug, NetAFP Bug ID #13
+* FIX: dbd: Better checking for duplicated or bogus CNIDs from AppleDouble
+       files
+* FIX: dbd: Remove BerkeleyDB database environment after running `dbd`. This
+       is crucial for the automatic BerkeleyDB database upgrade feature which
+       is built into cnid_dbd and dbd.
+* FIX: Fix compilation error when AppleTalk support is disabled
+* FIX: Portability fixes
+* FIX: search of surrogate pair
+
+Changes in 2.2.1
+================
+
+* NEW: afpd: disable continous service feature by default, new option
+       -keepsessions to enable it
+* NEW: configure option "--enable-redhat-systemd" for Fedora15 and later.
+       "--enable-redhat" is renamed "--enable-redhat-sysv".
+* UPD: afpd: Enhance ACL support detection for volumes: enable them per volume
+       if
+       1) ACL support compiled in, 2) the volume supports ACLs, 3) the new
+       volume option "noacls" is not set for the volume.
+       The previous behaviour was to enable ACL support for a volume if
+       1) it was compiled in and 2) the volume supported ACLs. There was no way
+       to disable ACLs for a volume.
+* UPD: afpd: add a configurable hold time option to FCE file modification event
+       generation, default is 60 s, new option "fceholdfmod" to change it
+* UPD: afpd: add support for new NetBSD quota subsystem, Bug ID 3249879
+* FIX: afpd: increase BerkeleyDB locks and lockobjs
+* FIX: afpd: create special folder as root
+* FIX: afpd: fix compilation error if --enable-ddp is used
+* FIX: afpd: More robust IPC reconnect error handling
+* FIX: afpd: ACL access checking
+* FIX: afpd: fix a possible race condition between SIGCHLD handler and
+       new connection attempts
+* FIX: afpd: fix undefined behaviour when more then ~510 connetions where
+       established
+* FIX: afpd: fix a crash when searching for a UUID that is not a special
+       local UUID and LDAP support is not compiled in
+* FIX: afpd: .volinfo file not created on first volume access if user in rolist
+* FIX: afpd: possible crash at startup when registering with Avahi
+       when Avahi is not running
+* FIX: afpd: return correct user/group type when mapping UUIDs to names
+* FIX: afpd: for directories add DARWIN_ACE_DELETE ACE
+       if DARWIN_ACE_ADD_SUBDIRECTORY is set
+* FIX: afpd: afpd crashed when it failed to register with Avahi because eg
+       user service registration is disabled in the Avahi config
+* FIX: dbd: function checking and removing malformed ad:ea header files failed
+       to chdir back to the original working directory
+* FIX: cnid_dbd: increase BerkeleyDB locks and lockobjs
+* FIX: cnid_dbd: implement -d option, deletes CNID db
+* FIX: dbd: better detection of local (or SMB/NFS) modifications on AFP volumes
+* FIX: suse: initscript return better status
+* FIX: Sourcecode distribution: add missing headers
+* FIX: Solaris 10: missing dirfd replacement function
+* FIX: case-conversion of surrogate pair
+* FIX: Compilation error on GNU/kFreeBSD, fixes Bug ID 3392794 and
+       Debian #630349
+* FIX: Fix Debian Bug#637025
+* FIX: Multiple *BSD compilation compatibility fixes, Bug ID 3380785
+* FIX: precompose_w() failed if tail character is decomposed surrogate pair
+
+Changes in 2.2.0
 ==============
 
 * NEW: afpd: new volume option "nonetids"
@@ -18,7 +159,8 @@ Changes in 2.2
 * FIX: afpd: new catsearch was broken
 * FIX: afpd: only use volume UUIDs in master afpd
 * FIX: dbd: Multiple fixes, reliable locking
-* FIX: ad file suite: fix an error that resulted in CNID database inconsistencies
+* FIX: ad file suite: fix an error that resulted in CNID database
+       inconsistencies
 
 Changes in 2.2beta4
 ===================

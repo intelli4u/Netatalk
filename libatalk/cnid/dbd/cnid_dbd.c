@@ -65,10 +65,6 @@ static void delay(int sec)
     select(0, NULL, NULL, NULL, &tv);
 }
 
-#ifndef AI_NUMERICSERV
-#define AI_NUMERICSERV 0
-#endif
-
 static int tsock_getfd(const char *host, const char *port)
 {
     int sock = -1;
@@ -82,7 +78,9 @@ static int tsock_getfd(const char *host, const char *port)
     memset(&hints, 0, sizeof hints);
     hints.ai_family = AF_UNSPEC;
     hints.ai_socktype = SOCK_STREAM;
+#ifdef AI_NUMERICSERV
     hints.ai_flags = AI_NUMERICSERV;
+#endif
 
     if ((err = getaddrinfo(host, port, &hints, &servinfo)) != 0) {
         LOG(log_error, logtype_default, "tsock_getfd: getaddrinfo: CNID server %s:%s : %s\n",

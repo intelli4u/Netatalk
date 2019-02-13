@@ -1,4 +1,4 @@
-#ifdef HAVE_ACLS
+#ifdef HAVE_LDAP
 
 #ifndef LDAPCONFIG_H
 #define LDAPCONFIG_H
@@ -14,6 +14,7 @@ extern char *ldap_auth_pw;
 extern char *ldap_userbase;
 extern char *ldap_groupbase;
 extern char *ldap_uuid_attr;
+extern char *ldap_uuid_string;
 extern char *ldap_name_attr;
 extern char *ldap_group_attr;
 extern char *ldap_uid_attr;
@@ -39,4 +40,4 @@ extern int ldap_config_valid;
 
 #endif /* LDAPCONFIG_H */
 
-#endif /* HAVE_ACLS */
+#endif /* HAVE_LDAP */

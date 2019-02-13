@@ -42,10 +42,101 @@ char *strchr (), *strrchr ();
 #include <atalk/logger.h>
 #include <atalk/afp.h>
 #include <atalk/compat.h>
+#include <atalk/util.h>
 
 #include "auth.h"
 #include "volume.h"
 #include "unix.h"
+
+#ifdef HAVE_LIBQUOTA
+#include <quota/quota.h>
+
+static int
+getfreespace(struct vol *vol, VolSpace *bfree, VolSpace *btotal,
+    uid_t uid, const char *classq)
+{
+	int retq;
+	struct ufs_quota_entry ufsq[QUOTA_NLIMITS];
+	time_t now;
+
+	if (time(&now) == -1) {
+		LOG(log_info, logtype_afpd, "time(): %s",
+		    strerror(errno));
+		return -1;
+	}
+
+	if ( seteuid( getuid() ) != 0 )  {
+		LOG(log_info, logtype_afpd, "seteuid(): %s",
+		    strerror(errno));
+		return -1;
+	}
+	if ((retq = getfsquota(vol->v_path, ufsq, uid, classq)) < 0) {
+		LOG(log_info, logtype_afpd, "getfsquota(%s, %s): %s",
+		    vol->v_path, classq, strerror(errno));
+	}
+        seteuid( uid );
+	if (retq < 1)
+		return retq;
+
+	switch(QL_STATUS(quota_check_limit(ufsq[QUOTA_LIMIT_BLOCK].ufsqe_cur, 1,
+	    ufsq[QUOTA_LIMIT_BLOCK].ufsqe_softlimit,
+	    ufsq[QUOTA_LIMIT_BLOCK].ufsqe_hardlimit,
+	    ufsq[QUOTA_LIMIT_BLOCK].ufsqe_time, now))) {
+	case QL_S_DENY_HARD:
+	case QL_S_DENY_GRACE:
+		*bfree = 0;
+		*btotal = dbtob(ufsq[QUOTA_LIMIT_BLOCK].ufsqe_cur);
+		break;
+	default:
+		*bfree = dbtob(ufsq[QUOTA_LIMIT_BLOCK].ufsqe_hardlimit -
+		    ufsq[QUOTA_LIMIT_BLOCK].ufsqe_cur);
+		*btotal = dbtob(ufsq[QUOTA_LIMIT_BLOCK].ufsqe_hardlimit);
+		break;
+	}
+	return 1;
+}
+
+int uquota_getvolspace( struct vol *vol, VolSpace *bfree, VolSpace *btotal, const u_int32_t bsize)
+{
+	int uretq, gretq;
+	VolSpace ubfree, ubtotal;
+	VolSpace gbfree, gbtotal;
+
+	uretq = getfreespace(vol, &ubfree, &ubtotal,
+	    uuid, QUOTADICT_CLASS_USER);
+	LOG(log_info, logtype_afpd, "getfsquota(%s): %d %d",
+	    vol->v_path, (int)ubfree, (int)ubtotal);
+	if (ngroups >= 1) {
+		gretq = getfreespace(vol, &ubfree, &ubtotal,
+		    groups[0], QUOTADICT_CLASS_GROUP);
+	} else
+		gretq = -1;
+	if (uretq < 1 && gretq < 1) { /* no quota for this fs */
+		return AFPERR_PARAM;
+	}
+	if (uretq < 1) {
+		/* use group quotas */
+		*bfree = gbfree;
+		*btotal = gbtotal;
+	} else if (gretq < 1) {
+		/* use user quotas */
+		*bfree = ubfree;
+		*btotal = ubtotal;
+	} else {
+		/* return smallest remaining space of user and group */
+		if (ubfree < gbfree) {
+			*bfree = ubfree;
+			*btotal = ubtotal;
+		} else {
+			*bfree = gbfree;
+			*btotal = gbtotal;
+		}
+	}
+	return AFP_OK;
+
+}
+
+#else /* HAVE_LIBQUOTA */
 
 /*
 #define DEBUG_QUOTA 0
@@ -297,7 +388,7 @@ mountp( char *file, int *nfs)
     dev_t			devno;
     static struct mnttab	mnt;
 
-    if ( lstat( file, &sb ) < 0 ) {
+    if (stat(file, &sb) < 0) {
         return( NULL );
     }
     devno = sb.st_dev;
@@ -308,14 +399,14 @@ mountp( char *file, int *nfs)
 
     while ( getmntent( mtab, &mnt ) == 0 ) {
         /* local fs */
-        if ( (lstat( mnt.mnt_special, &sb ) == 0) && (devno == sb.st_rdev)) {
+        if ( (stat( mnt.mnt_special, &sb ) == 0) && (devno == sb.st_rdev)) {
             fclose( mtab );
             return mnt.mnt_mountp;
         }
 
         /* check for nfs. we probably should use
          * strcmp(mnt.mnt_fstype, MNTTYPE_NFS), but that's not as fast. */
-        if ((lstat(mnt.mnt_mountp, &sb) == 0) && (devno == sb.st_dev) &&
+        if ((stat(mnt.mnt_mountp, &sb) == 0) && (devno == sb.st_dev) &&
                 strchr(mnt.mnt_special, ':')) {
             *nfs = 1;
             fclose( mtab );
@@ -385,7 +476,7 @@ special(char *file, int *nfs)
     struct mntent	*mnt;
     int 		found=0;
 
-    if ( lstat( file, &sb ) < 0 ) {
+    if (stat(file, &sb) < 0 ) {
         return( NULL );
     }
     devno = sb.st_dev;
@@ -396,14 +487,14 @@ special(char *file, int *nfs)
 
     while (( mnt = getmntent( mtab )) != NULL ) {
         /* check for local fs */
-        if ( (lstat( mnt->mnt_fsname, &sb ) == 0) && devno == sb.st_rdev) {
+        if ( (stat( mnt->mnt_fsname, &sb ) == 0) && devno == sb.st_rdev) {
 	    found = 1;
 	    break;
         }
 
         /* check for an nfs mount entry. the alternative is to use
         * strcmp(mnt->mnt_type, MNTTYPE_NFS) instead of the strchr. */
-        if ((lstat(mnt->mnt_dir, &sb) == 0) && (devno == sb.st_dev) &&
+        if ((stat(mnt->mnt_dir, &sb) == 0) && (devno == sb.st_dev) &&
                 strchr(mnt->mnt_fsname, ':')) {
             *nfs = 1;
 	    found = 1;
@@ -739,4 +830,5 @@ int uquota_getvolspace( struct vol *vol, VolSpace *bfree, VolSpace *btotal, cons
 
 	return( AFP_OK );
 }
+#endif /* HAVE_LIBQUOTA */
 #endif

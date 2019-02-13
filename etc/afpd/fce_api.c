@@ -80,6 +80,7 @@ static const char *skip_files[] =
 	".DS_Store",
 	NULL
 };
+static struct fce_close_event last_close_event;
 
 /*
  *
@@ -89,7 +90,7 @@ static const char *skip_files[] =
  * */
 void fce_init_udp()
 {
-    int rv, i;
+    int rv;
     struct addrinfo hints, *servinfo, *p;
 
     if (udp_initialized == FCE_TRUE)
@@ -99,7 +100,7 @@ void fce_init_udp()
     hints.ai_family = AF_UNSPEC;
     hints.ai_socktype = SOCK_DGRAM;
 
-    for (i = 0; i < udp_sockets; i++) {
+    for (int i = 0; i < udp_sockets; i++) {
         struct udp_entry *udp_entry = udp_socket_list + i;
 
         /* Close any pending sockets */
@@ -137,11 +138,10 @@ void fce_init_udp()
 
 void fce_cleanup()
 {
-	int i;
     if (udp_initialized == FCE_FALSE )
         return;
 
-    for (i = 0; i < udp_sockets; i++)
+    for (int i = 0; i < udp_sockets; i++)
     {
         struct udp_entry *udp_entry = udp_socket_list + i;
 
@@ -155,42 +155,44 @@ void fce_cleanup()
     udp_initialized = FCE_FALSE;
 }
 
-
 /*
  * Construct a UDP packet for our listeners and return packet size
  * */
 static ssize_t build_fce_packet( struct fce_packet *packet, char *path, int mode, uint32_t event_id )
 {
-    size_t pathlen;
+    size_t pathlen = 0;
     ssize_t data_len = 0;
+    uint64_t *t;
 
-    strncpy(packet->magic, FCE_PACKET_MAGIC, sizeof(packet->magic) );
+    /* Set content of packet */
+    memcpy(packet->magic, FCE_PACKET_MAGIC, sizeof(packet->magic) );
     packet->version = FCE_PACKET_VERSION;
     packet->mode = mode;
-    packet->event_id = event_id;
+   
+    packet->event_id = event_id; 
 
-    pathlen = strlen(path) + 1; /* include string terminator */
-
+    pathlen = strlen(path); /* exclude string terminator */
+    
     /* This should never happen, but before we bust this server, we send nonsense, fce listener has to cope */
     if (pathlen >= MAXPATHLEN)
         pathlen = MAXPATHLEN - 1;
 
-    /* This is the payload len. Means: the stream has len bytes more until packet is finished */
-    /* A server should read the first 16 byte, decode them and then fetch the rest */
-    data_len = FCE_PACKET_HEADER_SIZE + pathlen;
     packet->datalen = pathlen;
+
+    /* This is the payload len. Means: the packet has len bytes more until packet is finished */
+    data_len = FCE_PACKET_HEADER_SIZE + pathlen;
 
     switch (mode) {
     case FCE_TM_SIZE:
-        tm_used = hton64(tm_used);
-        memcpy(packet->data, &tm_used, sizeof(tm_used));
-        strncpy(packet->data + sizeof(tm_used), path, pathlen);
-
-        packet->datalen += sizeof(tm_used);
+        t = (uint64_t *)packet->data;
+        *t = hton64(tm_used);
+        memcpy(packet->data + sizeof(tm_used), path, pathlen);
+        
+        packet->datalen = pathlen + sizeof(tm_used);
         data_len += sizeof(tm_used);
         break;
     default:
-        strncpy(packet->data, path, pathlen);
+        memcpy(packet->data, path, pathlen);
         break;
     }
 
@@ -198,7 +200,10 @@ static ssize_t build_fce_packet( struct fce_packet *packet, char *path, int mode
     return data_len;
 }
 
-static int pack_fce_packet(struct fce_packet *packet, unsigned char *buf)
+/*
+ * Handle Endianess and write into buffer w/o padding
+ **/ 
+static void pack_fce_packet(struct fce_packet *packet, unsigned char *buf, int maxlen)
 {
     unsigned char *p = buf;
 
@@ -211,18 +216,17 @@ static int pack_fce_packet(struct fce_packet *packet, unsigned char *buf)
     *p = packet->mode;
     p++;
     
-    uint32_t id = htonl(packet->event_id);
-    memcpy(p, &id, sizeof(id));
+    uint32_t *id = (uint32_t*)p;
+    *id = htonl(packet->event_id);
     p += sizeof(packet->event_id);
 
-    uint16_t l = htons(packet->datalen);
-    memcpy(p, &l, sizeof(l));
-    p += sizeof(l);
+    uint16_t *l = ( uint16_t *)p;
+    *l = htons(packet->datalen);
+    p += sizeof(packet->datalen);
 
-    memcpy(p, &packet->data[0], packet->datalen);
-    p += packet->datalen;
-
-    return 0;
+    if (((p - buf) +  packet->datalen) < maxlen) {
+        memcpy(p, &packet->data[0], packet->datalen);
+    }
 }
 
 /*
@@ -231,20 +235,28 @@ static int pack_fce_packet(struct fce_packet *packet, unsigned char *buf)
  * */
 static void send_fce_event( char *path, int mode )
 {    
+    static int first_event = FCE_TRUE;
+
     struct fce_packet packet;
     void *data = &packet;
     static uint32_t event_id = 0; /* the unique packet couter to detect packet/data loss. Going from 0xFFFFFFFF to 0x0 is a valid increment */
-	int i;
+    time_t now = time(NULL);
 
     LOG(log_debug, logtype_afpd, "send_fce_event: start");
 
-    time_t now = time(NULL);
+    /* initialized ? */
+    if (first_event == FCE_TRUE) {
+        first_event = FCE_FALSE;
+        fce_init_udp();
+        /* Notify listeners the we start from the beginning */
+        send_fce_event( "", FCE_CONN_START );
+    }
 
     /* build our data packet */
     ssize_t data_len = build_fce_packet( &packet, path, mode, ++event_id );
-    pack_fce_packet(&packet, iobuf);
+    pack_fce_packet(&packet, iobuf, MAXIOBUF);
 
-    for (i = 0; i < udp_sockets; i++)
+    for (int i = 0; i < udp_sockets; i++)
     {
         int sent_data = 0;
         struct udp_entry *udp_entry = udp_socket_list + i;
@@ -273,7 +285,7 @@ static void send_fce_event( char *path, int mode )
 
             /* Okay, we have a running socket again, send server that we had a problem on our side*/
             data_len = build_fce_packet( &packet, "", FCE_CONN_BROKEN, 0 );
-            pack_fce_packet(&packet, iobuf);
+            pack_fce_packet(&packet, iobuf, MAXIOBUF);
 
             sendto(udp_entry->sock,
                    iobuf,
@@ -284,7 +296,7 @@ static void send_fce_event( char *path, int mode )
 
             /* Rebuild our original data packet */
             data_len = build_fce_packet( &packet, path, mode, event_id );
-            pack_fce_packet(&packet, iobuf);
+            pack_fce_packet(&packet, iobuf, MAXIOBUF);
         }
 
         sent_data = sendto(udp_entry->sock,
@@ -329,6 +341,23 @@ static int add_udp_socket(const char *target_ip, const char *target_port )
     return AFP_OK;
 }
 
+static void save_close_event(const char *path)
+{
+    time_t now = time(NULL);
+
+    /* Check if it's a close for the same event as the last one */
+    if (last_close_event.time   /* is there any saved event ? */
+        && (strcmp(path, last_close_event.path) != 0)) {
+        /* no, so send the saved event out now */
+        send_fce_event(last_close_event.path, FCE_FILE_MODIFY);
+    }
+
+    LOG(log_debug, logtype_afpd, "save_close_event: %s", path);
+
+    last_close_event.time = now;
+    strncpy(last_close_event.path, path, MAXPATHLEN);
+}
+
 /*
  *
  * Dispatcher for all incoming file change events
@@ -336,7 +365,8 @@ static int add_udp_socket(const char *target_ip, const char *target_port )
  * */
 static int register_fce(const char *u_name, int is_dir, int mode)
 {
-	int i;
+    static int first_event = FCE_TRUE;
+
     if (udp_sockets == 0)
         /* No listeners configured */
         return AFP_OK;
@@ -344,15 +374,14 @@ static int register_fce(const char *u_name, int is_dir, int mode)
     if (u_name == NULL)
         return AFPERR_PARAM;
 
-    static int first_event = FCE_TRUE;
-
 	/* do some initialization on the fly the first time */
 	if (first_event) {
 		fce_initialize_history();
+        first_event = FCE_FALSE;
 	}
 
 	/* handle files which should not cause events (.DS_Store atc. ) */
-	for (i = 0; skip_files[i] != NULL; i++)
+	for (int i = 0; skip_files[i] != NULL; i++)
 	{
 		if (!strcmp( u_name, skip_files[i]))
 			return AFP_OK;
@@ -387,26 +416,29 @@ static int register_fce(const char *u_name, int is_dir, int mode)
 
 	LOG(log_debug9, logtype_afpd, "Detected fc event <%d> for <%s>", mode, full_path_buffer );
 
-
-    /* we do initilization on the fly, no blocking calls in here 
-     * (except when using FQDN in broken DNS environment)
-     */
-    if (first_event == FCE_TRUE)
-    {
-        fce_init_udp();
-        
-        /* Notify listeners the we start from the beginning */
-        send_fce_event( "", FCE_CONN_START );
-        
-        first_event = FCE_FALSE;
+    if (mode & FCE_FILE_MODIFY) {
+        save_close_event(full_path_buffer);
+        return AFP_OK;
     }
 
-	/* Handle UDP transport */
     send_fce_event( full_path_buffer, mode );
 
     return AFP_OK;
 }
 
+static void check_saved_close_events(int fmodwait)
+{
+    time_t now = time(NULL);
+
+    /* check if configured holdclose time has passed */
+    if (last_close_event.time && ((last_close_event.time + fmodwait) < now)) {
+        LOG(log_debug, logtype_afpd, "check_saved_close_events: sending event: %s", last_close_event.path);
+        /* yes, send event */
+        send_fce_event(&last_close_event.path[0], FCE_FILE_MODIFY);
+        last_close_event.path[0] = 0;
+        last_close_event.time = 0;
+    }
+}
 
 /******************** External calls start here **************************/
 
@@ -414,6 +446,12 @@ static int register_fce(const char *u_name, int is_dir, int mode)
  * API-Calls for file change api, called form outside (file.c directory.c ofork.c filedir.c)
  * */
 #ifndef FCE_TEST_MAIN
+
+void fce_pending_events(AFPObj *obj)
+{
+    vol_fce_tm_event();
+    check_saved_close_events(obj->options.fce_fmodwait);
+}
 
 int fce_register_delete_file( struct path *path )
 {
@@ -425,7 +463,7 @@ int fce_register_delete_file( struct path *path )
     if (!(fce_ev_enabled & (1 << FCE_FILE_DELETE)))
         return ret;
 	
-    ret = register_fce( path->u_name, FALSE, FCE_FILE_DELETE );
+    ret = register_fce( path->u_name, false, FCE_FILE_DELETE );
 
     return ret;
 }
@@ -439,7 +477,7 @@ int fce_register_delete_dir( char *name )
     if (!(fce_ev_enabled & (1 << FCE_DIR_DELETE)))
         return ret;
 	
-    ret = register_fce( name, TRUE, FCE_DIR_DELETE);
+    ret = register_fce( name, true, FCE_DIR_DELETE);
 
     return ret;
 }
@@ -454,7 +492,7 @@ int fce_register_new_dir( struct path *path )
     if (!(fce_ev_enabled & (1 << FCE_DIR_CREATE)))
         return ret;
 
-    ret = register_fce( path->u_name, TRUE, FCE_DIR_CREATE );
+    ret = register_fce( path->u_name, true, FCE_DIR_CREATE );
 
     return ret;
 }
@@ -470,7 +508,7 @@ int fce_register_new_file( struct path *path )
     if (!(fce_ev_enabled & (1 << FCE_FILE_CREATE)))
         return ret;
 
-    ret = register_fce( path->u_name, FALSE, FCE_FILE_CREATE );
+    ret = register_fce( path->u_name, false, FCE_FILE_CREATE );
 
     return ret;
 }
@@ -494,7 +532,7 @@ int fce_register_file_modification( struct ofork *ofork )
         return AFPERR_MISC;
     }
     
-    ret = register_fce( u_name, FALSE, FCE_FILE_MODIFY );
+    ret = register_fce( u_name, false, FCE_FILE_MODIFY );
     
     return ret;    
 }
@@ -510,7 +548,7 @@ int fce_register_tm_size(const char *vol, size_t used)
         return ret;
 
     tm_used = used;             /* oh what a hack */
-    ret = register_fce(vol, FALSE, FCE_TM_SIZE);
+    ret = register_fce(vol, false, FCE_TM_SIZE);
 
     return ret;
 }
@@ -565,6 +603,8 @@ int fce_set_events(const char *events)
     }
 
     free(e);
+
+    return AFP_OK;
 }
 
 #ifdef FCE_TEST_MAIN

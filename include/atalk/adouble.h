@@ -34,32 +34,7 @@
 #include <config.h>
 #endif
 
-/* -------------------
- * need pread() and pwrite()
- */
-#ifdef HAVE_PREAD
-
-#ifndef HAVE_PWRITE
-#undef HAVE_PREAD
-#endif
-
-#endif
-
-#ifdef HAVE_PWRITE
-#ifndef HAVE_PREAD
-#undef HAVE_PWRITE
-#endif
-#endif
-
-/*
-  Still have to figure out which platforms really
-  need _XOPEN_SOURCE defined for pread.
-*/
-#if defined(HAVE_PREAD) && !defined(SOLARIS) && !defined(__OpenBSD__) && !defined(__NetBSD__) && !defined(__FreeBSD__) && !defined(TRU64)
-#ifndef _XOPEN_SOURCE
-#define _XOPEN_SOURCE 500
-#endif
-#endif
+#include <atalk/standards.h>
 
 #include <sys/types.h>
 #include <sys/stat.h>
@@ -232,8 +207,8 @@ typedef u_int32_t cnid_t;
  */
 
 struct ad_entry {
-    u_int32_t   ade_off;
-    u_int32_t   ade_len;
+    off_t   ade_off;
+    ssize_t   ade_len;
 };
 
 typedef struct adf_lock_t {
@@ -318,6 +293,8 @@ struct adouble_fops {
 #define ADVOL_UNIXPRIV   (1 << 2) /* adouble unix priv */
 #define ADVOL_INVDOTS    (1 << 3) /* dot files (.DS_Store) are invisible) */
 #define ADVOL_NOADOUBLE  (1 << 4)
+#define ADVOL_FOLLO_SYML (1 << 5)
+
 
 /* lock flags */
 #define ADLOCK_CLR      (0)
@@ -335,7 +312,11 @@ struct adouble_fops {
 /* synchronization locks */
 #define AD_FILELOCK_BASE (0x80000000)
 #else
+#if _FILE_OFFSET_BITS == 64
+#define AD_FILELOCK_BASE (0x7FFFFFFFFFFFFFFFULL - 9)
+#else
 #define AD_FILELOCK_BASE (0x7FFFFFFF -9)
+#endif
 #endif
 
 /* FIXME:
@@ -437,6 +418,8 @@ struct adouble_fops {
 
 #define ad_get_HF_flags(ad) ((ad)->ad_resource_fork.adf_flags)
 #define ad_get_MD_flags(ad) ((ad)->ad_md->adf_flags)
+
+#define ad_get_syml_opt(ad) (((ad)->ad_options & ADVOL_FOLLO_SYML) ? 0 : O_NOFOLLOW)
 
 /* ad_flush.c */
 extern int ad_rebuild_adouble_header (struct adouble *);

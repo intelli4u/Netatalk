@@ -62,6 +62,9 @@ static int dsi_peek(DSI *dsi)
     maxfd = dsi->socket + 1;
 
     while (1) {
+        if (dsi->socket == -1)
+            /* eg dsi_disconnect() might have disconnected us */
+            return -1;
         FD_ZERO(&readfds);
         FD_ZERO(&writefds);
 
@@ -236,7 +239,7 @@ static void unblock_sig(DSI *dsi)
  * Communication error with the client, enter disconnected state
  *
  * 1. close the socket
- * 2. set the DSI_DISCONNECTED flag
+ * 2. set the DSI_DISCONNECTED flag, remove possible sleep flags
  *
  * @returns  0 if successfully entered disconnected state
  *          -1 if ppid is 1 which means afpd master died
@@ -244,8 +247,10 @@ static void unblock_sig(DSI *dsi)
  */
 int dsi_disconnect(DSI *dsi)
 {
+    LOG(log_note, logtype_dsi, "dsi_disconnect: entering disconnected state");
     dsi->proto_close(dsi);          /* 1 */
-    dsi->flags |= DSI_DISCONNECTED; /* 2 */
+    dsi->flags &= ~(DSI_SLEEPING | DSI_EXTSLEEP); /* 2 */
+    dsi->flags |= DSI_DISCONNECTED;
     if (geteuid() == 0)
         return -1;
     return 0;
@@ -264,7 +269,7 @@ ssize_t dsi_stream_write(DSI *dsi, void *data, const size_t length, int mode)
   dsi->in_write++;
   written = 0;
 
-  LOG(log_maxdebug, logtype_dsi, "dsi_stream_write: sending %u bytes", length);
+  LOG(log_maxdebug, logtype_dsi, "dsi_stream_write(send: %zd bytes): START", length);
 
   if (dsi->flags & DSI_DISCONNECTED)
       return -1;
@@ -303,6 +308,7 @@ ssize_t dsi_stream_write(DSI *dsi, void *data, const size_t length, int mode)
   }
 
   dsi->write_count += written;
+  LOG(log_maxdebug, logtype_dsi, "dsi_stream_write(send: %zd bytes): END", length);
 
 exit:
   dsi->in_write--;
@@ -315,10 +321,12 @@ exit:
 #ifdef WITH_SENDFILE
 ssize_t dsi_stream_read_file(DSI *dsi, int fromfd, off_t offset, const size_t length)
 {
+  int ret = 0;
   size_t written;
   ssize_t len;
+  off_t pos = offset;
 
-  LOG(log_maxdebug, logtype_dsi, "dsi_stream_read_file: sending %u bytes", length);
+  LOG(log_maxdebug, logtype_dsi, "dsi_stream_read_file(send %zd bytes): START", length);
 
   if (dsi->flags & DSI_DISCONNECTED)
       return -1;
@@ -327,15 +335,27 @@ ssize_t dsi_stream_read_file(DSI *dsi, int fromfd, off_t offset, const size_t le
   written = 0;
 
   while (written < length) {
-    len = sys_sendfile(dsi->socket, fromfd, &offset, length - written);
+    len = sys_sendfile(dsi->socket, fromfd, &pos, length - written);
         
     if (len < 0) {
-      if (errno == EINTR)
-          continue;
-      if (errno == EINVAL || errno == ENOSYS)
-          return -1;
-          
-      if (errno == EAGAIN || errno == EWOULDBLOCK) {
+      if (errno == EINVAL || errno == ENOSYS) {
+          ret = -1;
+          goto exit;
+      }          
+      if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) {
+          /*
+           * May return EINTR too, see:
+           * http://wesunsolve.net/bugid/id/6408517
+           * https://issues.apache.org/bugzilla/show_bug.cgi?id=44550
+           */
+#if defined(SOLARIS) || defined(FREEBSD)
+          if (pos > offset) {
+              /* we actually have sent sth., adjust counters and keep trying */
+              len = pos - offset;
+              written += len;
+              offset = pos;
+          }
+#endif
           if (dsi_peek(dsi)) {
               /* can't go back to blocking mode, exit, the next read
                  will return with an error and afpd will die.
@@ -349,15 +369,20 @@ ssize_t dsi_stream_read_file(DSI *dsi, int fromfd, off_t offset, const size_t le
     }
     else if (!len) {
         /* afpd is going to exit */
-        errno = EIO;
-        return -1; /* I think we're at EOF here... */
+          ret = -1;
+          goto exit;
     }
     else 
         written += len;
   }
 
   dsi->write_count += written;
+
+exit:
   dsi->in_write--;
+  LOG(log_maxdebug, logtype_dsi, "dsi_stream_read_file: sent: %zd", written);
+  if (ret != 0)
+      return -1;
   return written;
 }
 #endif
@@ -389,8 +414,10 @@ size_t dsi_stream_read(DSI *dsi, void *data, const size_t length)
           stored += len;
       } else { /* eof or error */
           /* don't log EOF error if it's just after connect (OSX 10.3 probe) */
+#if 0
           if (errno == ECONNRESET)
               dsi->flags |= DSI_GOT_ECONNRESET;
+#endif
           if (len || stored || dsi->read_count) {
               if (! (dsi->flags & DSI_DISCONNECTED)) {
                   LOG(log_error, logtype_dsi, "dsi_stream_read: len:%d, %s",
@@ -419,8 +446,7 @@ int dsi_stream_send(DSI *dsi, void *buf, size_t length)
   size_t towrite;
   ssize_t len;
 
-  LOG(log_maxdebug, logtype_dsi, "dsi_stream_send: %u bytes",
-      length ? length : sizeof(block));
+  LOG(log_maxdebug, logtype_dsi, "dsi_stream_send(%u bytes): START", length);
 
   if (dsi->flags & DSI_DISCONNECTED)
       return 0;
@@ -435,6 +461,7 @@ int dsi_stream_send(DSI *dsi, void *buf, size_t length)
 	 sizeof(dsi->header.dsi_reserved));
 
   if (!length) { /* just write the header */
+      LOG(log_maxdebug, logtype_dsi, "dsi_stream_send(%u bytes): DSI header, no data", sizeof(block));
     length = (dsi_stream_write(dsi, block, sizeof(block), 0) == sizeof(block));
     return length; /* really 0 on failure, 1 on success */
   }
@@ -478,22 +505,26 @@ int dsi_stream_send(DSI *dsi, void *buf, size_t length)
           iov[1].iov_len -= len;
       }
   }
+
+  LOG(log_maxdebug, logtype_dsi, "dsi_stream_send(%u bytes): END", length);
   
   unblock_sig(dsi);
   return 1;
 }
 
 
-/* ---------------------------------------
- * read data. function on success. 0 on failure. data length gets
- * stored in length variable. this should really use size_t's, but
- * that would require changes elsewhere. */
-int dsi_stream_receive(DSI *dsi, void *buf, const size_t ilength,
-		       size_t *rlength)
+/*!
+ * Read DSI command and data
+ *
+ * @param  dsi   (rw) DSI handle
+ *
+ * @return    DSI function on success, 0 on failure
+ */
+int dsi_stream_receive(DSI *dsi)
 {
   char block[DSI_BLOCKSIZ];
 
-  LOG(log_maxdebug, logtype_dsi, "dsi_stream_receive: %u bytes", ilength);
+  LOG(log_maxdebug, logtype_dsi, "dsi_stream_receive: START");
 
   if (dsi->flags & DSI_DISCONNECTED)
       return 0;
@@ -504,26 +535,22 @@ int dsi_stream_receive(DSI *dsi, void *buf, const size_t ilength,
 
   dsi->header.dsi_flags = block[0];
   dsi->header.dsi_command = block[1];
-  /* FIXME, not the right place, 
-     but we get a server disconnect without reason in the log
-  */
-  if (!block[1]) {
-      LOG(log_error, logtype_dsi, "dsi_stream_receive: invalid packet, fatal");
-      return 0;
-  }
 
-  memcpy(&dsi->header.dsi_requestID, block + 2, 
-	 sizeof(dsi->header.dsi_requestID));
+  if (dsi->header.dsi_command == 0)
+      return 0;
+
+  memcpy(&dsi->header.dsi_requestID, block + 2, sizeof(dsi->header.dsi_requestID));
   memcpy(&dsi->header.dsi_code, block + 4, sizeof(dsi->header.dsi_code));
   memcpy(&dsi->header.dsi_len, block + 8, sizeof(dsi->header.dsi_len));
-  memcpy(&dsi->header.dsi_reserved, block + 12,
-	 sizeof(dsi->header.dsi_reserved));
+  memcpy(&dsi->header.dsi_reserved, block + 12, sizeof(dsi->header.dsi_reserved));
   dsi->clientID = ntohs(dsi->header.dsi_requestID);
   
   /* make sure we don't over-write our buffers. */
-  *rlength = min(ntohl(dsi->header.dsi_len), ilength);
-  if (dsi_stream_read(dsi, buf, *rlength) != *rlength) 
+  dsi->cmdlen = min(ntohl(dsi->header.dsi_len), DSI_CMDSIZ);
+  if (dsi_stream_read(dsi, dsi->commands, dsi->cmdlen) != dsi->cmdlen) 
     return 0;
+
+  LOG(log_debug, logtype_dsi, "dsi_stream_receive: DSI cmdlen: %zd", dsi->cmdlen);
 
   return block[1];
 }

@@ -48,9 +48,9 @@
  * and allows the user to specify a signal mask to apply during the select.
  */
 int
-pselect(int count, fd_set * __restrict rfds, fd_set * __restrict wfds,
-        fd_set * __restrict efds, const struct timespec * __restrict timo,
-        const sigset_t * __restrict mask)
+pselect(int count, fd_set * restrict rfds, fd_set * restrict wfds,
+        fd_set * restrict efds, const struct timespec * restrict timo,
+        const sigset_t * restrict mask)
 {
     sigset_t omask;
     struct timeval tvtimo, *tvp;

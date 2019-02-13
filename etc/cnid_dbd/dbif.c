@@ -21,6 +21,7 @@
 
 #include <atalk/logger.h>
 #include <atalk/util.h>
+#include <atalk/errchk.h>
 
 #include "db_param.h"
 #include "dbif.h"
@@ -33,27 +34,28 @@
  */
 static int dbif_stamp(DBD *dbd, void *buffer, int size)
 {
+    EC_INIT;
     struct stat st;
-    int         rc,cwd;
+    int cwd = -1;
 
     if (size < 8)
-        return -1;
+        EC_FAIL;
 
     /* Remember cwd */
     if ((cwd = open(".", O_RDONLY)) < 0) {
         LOG(log_error, logtype_cnid, "error opening cwd: %s", strerror(errno));
-        return -1;
+        EC_FAIL;
     }
 
     /* chdir to db_envhome */
     if ((chdir(dbd->db_envhome)) != 0) {
         LOG(log_error, logtype_cnid, "error chdiring to db_env '%s': %s", dbd->db_envhome, strerror(errno));        
-        return -1;
+        EC_FAIL;
     }
 
-    if ((rc = stat(dbd->db_table[DBIF_CNID].name, &st)) < 0) {
+    if (stat(dbd->db_table[DBIF_CNID].name, &st) < 0) {
         LOG(log_error, logtype_cnid, "error stating database %s: %s", dbd->db_table[DBIF_CNID].name, db_strerror(errno));
-        return -1;
+        EC_FAIL;
     }
 
     LOG(log_maxdebug, logtype_cnid,"stamp: %s", asctime(localtime(&st.st_ctime)));
@@ -61,12 +63,15 @@ static int dbif_stamp(DBD *dbd, void *buffer, int size)
     memset(buffer, 0, size);
     memcpy(buffer, &st.st_ctime, sizeof(st.st_ctime));
 
-    if ((fchdir(cwd)) != 0) {
-        LOG(log_error, logtype_cnid, "error chdiring back: %s", strerror(errno));        
-        return -1;
+EC_CLEANUP:
+    if (cwd != -1) {
+        if (fchdir(cwd) != 0) {
+            LOG(log_error, logtype_cnid, "error chdiring back: %s", strerror(errno));        
+            EC_STATUS(-1);
+        }
+        close(cwd);
     }
-
-    return 0;
+    EC_EXIT;
 }
 
 /*!
@@ -800,7 +805,12 @@ int dbif_env_remove(const char *path)
     int ret;
     DBD *dbd;
 
-    LOG(log_debug, logtype_cnid, "Reopening BerkeleyDB environment");
+    LOG(log_debug, logtype_cnid, "Trying to remove BerkeleyDB environment");
+
+    if (get_lock(LOCK_EXCL, path) != LOCK_EXCL) {
+        LOG(log_debug, logtype_cnid, "CNID db \"%s\" in use, can't remove BerkeleyDB environment", path);
+        return 0;
+    }
     
     if (NULL == (dbd = dbif_init(path, "cnid2.db")))
         return -1;
@@ -963,7 +973,7 @@ int dbif_del(DBD *dbd, const int dbi, DBT *key, u_int32_t flags)
                                      flags);
     
     if (ret == DB_NOTFOUND) {
-        LOG(log_info, logtype_cnid, "key not found");
+        LOG(log_debug, logtype_cnid, "key not found");
         return 0;
     }
     if (ret) {

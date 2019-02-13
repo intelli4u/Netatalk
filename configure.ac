@@ -116,12 +116,17 @@ rm -rf conftest*
 
 case $host_cpu:$atalk_cv_cc_64bit_output in
 powerpc64:yes | s390x:yes | sparc*:yes | x86_64:yes | i386:yes)
-    AC_MSG_RESULT([yes])
     case $target_os in
     solaris2*)
+        AC_MSG_RESULT([yes])
         atalk_libname="lib/64"
         ;;
+    *bsd* | dragonfly*)
+        AC_MSG_RESULT([no])
+        atalk_libname="lib"
+        ;;
     *)
+        AC_MSG_RESULT([yes])
         atalk_libname="lib64"
         ;;
     esac
@@ -385,22 +390,53 @@ AC_ARG_ENABLE(locking,
 
 )
 
-
 AC_ARG_ENABLE(redhat,
-	[  --enable-redhat         use redhat-style sysv configuration ],[
+	[  --enable-redhat         obsoleted ],[
+	echo "ERROR: --enable-redhat is obsoleted. Use --enable-redhat-sysv or --enable-redhat-systemd."
+	exit 1
+	]
+)
+
+AC_ARG_ENABLE(redhat-sysv,
+	[  --enable-redhat-sysv    use redhat-style sysv (upstart) configuration ],[
 	if test "$enableval" = "yes"; then
-		sysv_style=redhat
+		sysv_style=redhat-sysv
 	fi
 	AC_MSG_RESULT([enabling redhat-style sysv support])
 	]
 )
 
-AC_ARG_ENABLE(suse,
-	[  --enable-suse           use suse-style sysv configuration ],[
+AC_ARG_ENABLE(redhat-systemd,
+	[  --enable-redhat-systemd use redhat-style systemd (>=Fedora15) configuration ],[
 	if test "$enableval" = "yes"; then
-		sysv_style=suse
+		sysv_style=redhat-systemd
+	fi
+	AC_MSG_RESULT([enabling redhat-style systemd support])
+	]
+)
+
+AC_ARG_ENABLE(suse,
+	[  --enable-suse           obsoleted ],[
+	echo "ERROR: --enable-suse is obsoleted. Use --enable-suse-sysv or --enable-suse-systemd."
+	exit 1
+	]
+)
+
+AC_ARG_ENABLE(suse-sysv,
+	[  --enable-suse-sysv      use suse-style sysv configuration ],[
+	if test "$enableval" = "yes"; then
+		sysv_style=suse-sysv
 	fi
 	AC_MSG_RESULT([enabling suse-style sysv support])
+	]
+)
+
+AC_ARG_ENABLE(suse-systemd,
+	[  --enable-suse-systemd   use suse-style systemd (>=openSUSE12.1) configuration ],[
+	if test "$enableval" = "yes"; then
+		sysv_style=suse-systemd
+	fi
+	AC_MSG_RESULT([enabling suse-style systemd support])
 	]
 )
 
@@ -411,14 +447,6 @@ AC_ARG_ENABLE(gentoo,
 	fi
 	AC_MSG_RESULT([enabling gentoo-style sysv support])
 	]
-)
-
-AC_ARG_ENABLE(cobalt,
-	[  --enable-cobalt         use cobalt-style sysv configuration ],
-	if test "$enableval" = "yes"; then
-		sysv_style=cobalt
-	fi
-	AC_MSG_RESULT([enabling cobalt-style sysv support])
 )
 
 AC_ARG_ENABLE(netbsd,
@@ -435,6 +463,15 @@ AC_ARG_ENABLE(debian,
 		sysv_style=debian
 	fi
 	AC_MSG_RESULT([enabling debian-style sysv support])
+	]
+)
+
+AC_ARG_ENABLE(systemd,
+	[  --enable-systemd        use general systemd configuration],[
+	if test "$enableval" = "yes"; then
+		sysv_style=systemd
+	fi
+	AC_MSG_RESULT([enabling general systemd support])
 	]
 )
 
@@ -533,6 +570,7 @@ dnl ac_cv_target_os is now host_os, ac_cv_target_cpu is now host_cpu
 dnl --------------------- determine operating system from "target"
 case "$host_os" in
 	*aix*)				this_os=aix ;;
+	*kfreebsd*-gnu)			this_os=kfreebsd-gnu ;;
 	*freebsd*) 			this_os=freebsd ;;
 	*hpux11*)			this_os=hpux11 ;;
 	*irix*)				this_os=irix ;;
@@ -556,6 +594,8 @@ dnl --------------------- GNU source
 case "$this_os" in
 	linux)	AC_DEFINE(_GNU_SOURCE, 1, [Whether to use GNU libc extensions])
         ;;
+     kfreebsd-gnu) AC_DEFINE(_GNU_SOURCE, 1, [Whether to use GNU libc extensions])
+        ;;
 esac
 
 dnl --------------------- operating system specific flags (port from sys/*)
@@ -576,7 +616,14 @@ if test x"$this_os" = "xfreebsd"; then
 	AC_MSG_RESULT([ * FreeBSD specific configuration])
 	AC_DEFINE(BSD4_4, 1, [BSD compatiblity macro])
 	AC_DEFINE(FREEBSD, 1, [Define if OS is FreeBSD])
-	AC_DEFINE(SENDFILE_FLAVOR_BSD, 1, [Define if the sendfile() function uses BSD semantics])
+    AC_DEFINE(OPEN_NOFOLLOW_ERRNO, EMLINK, errno returned by open with O_NOFOLLOW)
+fi
+
+dnl ----- GNU/kFreeBSD specific -----
+if test x"$this_os" = "xkfreebsd-gnu"; then 
+	AC_MSG_RESULT([ * GNU/kFreeBSD specific configuration])
+	AC_DEFINE(BSD4_4, 1, [BSD compatiblity macro])
+	AC_DEFINE(FREEBSD, 1, [Define if OS is FreeBSD])
     AC_DEFINE(OPEN_NOFOLLOW_ERRNO, EMLINK, errno returned by open with O_NOFOLLOW)
 fi
 
@@ -641,62 +688,6 @@ fi
 	dnl ----- see etc/afpd/quota.c
 	AC_DEFINE(HAVE_BROKEN_DBTOB, 1, [Define if dbtob is broken])
 
-	netatalk_cv_linux_sendfile=yes
-	AC_MSG_CHECKING([use sendfile syscall])
-        AC_ARG_ENABLE(sendfile,
-	    [  --disable-sendfile       disable linux sendfile syscall],[
-	    	if test x"$enableval" = x"no"; then
-	  		netatalk_cv_linux_sendfile=no
-			AC_MSG_RESULT([no])
-		else
-			AC_MSG_RESULT([yes])
-
-	    	fi
-	    ],[
-		AC_MSG_RESULT([yes])
-	]
-
-       )
-
-	if test x"$netatalk_cv_linux_sendfile" = "xyes"; then 
-	    AC_CACHE_CHECK([for linux sendfile support],netatalk_cv_HAVE_SENDFILE,[
-	    AC_TRY_LINK([#include <sys/sendfile.h>],
-[\
-int tofd, fromfd;
-off_t offset;
-size_t total;
-ssize_t nwritten = sendfile(tofd, fromfd, &offset, total);
-],
-netatalk_cv_HAVE_SENDFILE=yes,netatalk_cv_HAVE_SENDFILE=no)])
-
-# Try and cope with broken Linux sendfile....
-	    AC_CACHE_CHECK([for broken linux sendfile support],netatalk_cv_HAVE_BROKEN_LINUX_SENDFILE,[
-	    AC_TRY_LINK([\
-#if defined(_FILE_OFFSET_BITS) && (_FILE_OFFSET_BITS == 64)
-#undef _FILE_OFFSET_BITS
-#endif
-#include <sys/sendfile.h>],
-[\
-int tofd, fromfd;
-off_t offset;
-size_t total;
-ssize_t nwritten = sendfile(tofd, fromfd, &offset, total);
-],
-netatalk_cv_HAVE_BROKEN_LINUX_SENDFILE=yes,netatalk_cv_HAVE_BROKEN_LINUX_SENDFILE=no,netatalk_cv_HAVE_BROKEN_SENDFILE=cross)])
-
-	    if test x"$netatalk_cv_HAVE_SENDFILE" = x"yes"; then
-    		AC_DEFINE(HAVE_SENDFILE,1,[Whether sendfile() is available])
-		AC_DEFINE(SENDFILE_FLAVOR_LINUX,1,[Whether linux sendfile() API is available])
-		AC_DEFINE(WITH_SENDFILE,1,[Whether sendfile() should be used])
-	    elif test x"$netatalk_cv_HAVE_BROKEN_LINUX_SENDFILE" = x"yes"; then
-		AC_DEFINE(SENDFILE_FLAVOR_LINUX,1,[Whether linux sendfile() API is available])
-		AC_DEFINE(LINUX_BROKEN_SENDFILE_API,1,[Whether (linux) sendfile() is broken])
-		AC_DEFINE(WITH_SENDFILE,1,[Whether sendfile should be used])
-	    else
-	  	netatalk_cv_linux_sendfile=no
-		AC_MSG_RESULT(no);
-	    fi
-	fi
 
 	dnl ----- Linux/alpha specific -----
 	if test x"$this_cpu" = "xalpha"; then 
@@ -736,8 +727,10 @@ fi
 dnl ----- OpenBSD specific -----
 if test x"$this_os" = "xopenbsd"; then 
 	AC_MSG_RESULT([ * OpenBSD specific configuration])
+    AC_DEFINE(BSD4_4, 1, [BSD compatiblity macro])
 	dnl ----- OpenBSD does not have crypt.h, uses unistd.h -----
 	AC_DEFINE(UAM_DHX, 1, [Define if the DHX UAM modules should be compiled])
+    AC_DEFINE(NO_DDP, 1, [Define if DDP should be disabled])
 fi
 
 dnl ----- Solaris specific -----
@@ -747,6 +740,8 @@ if test x"$this_os" = "xsolaris"; then
 	AC_DEFINE(_ISOC9X_SOURCE, 1, [Compatibility macro])
 	AC_DEFINE(NO_STRUCT_TM_GMTOFF, 1, [Define if the gmtoff member of struct tm is not available])
 	AC_DEFINE(SOLARIS, 1, [Solaris compatibility macro])
+    AC_DEFINE(_XOPEN_SOURCE, 600, [Solaris compilation environment])
+    AC_DEFINE(__EXTENSIONS__,  1, [Solaris compilation environment])
 	CFLAGS="-I\$(top_srcdir)/sys/generic $CFLAGS"
 	need_dash_r=yes
 	sysv_style=solaris
@@ -847,6 +842,43 @@ if test x"$this_os" = "xtru64"; then
 	CFLAGS="-I\$(top_srcdir)/sys/tru64 $CFLAGS"
 	need_dash_r=no
 	sysv_style=tru64
+fi
+
+dnl ------ Check for sendfile() --------
+netatalk_cv_search_sendfile=yes
+AC_ARG_ENABLE(sendfile,
+    [  --disable-sendfile       disable sendfile syscall],
+    [if test x"$enableval" = x"no"; then
+            netatalk_cv_search_sendfile=no
+        fi]
+)
+
+if test x"$netatalk_cv_search_sendfile" = x"yes"; then
+   case "$host_os" in
+   *linux*)
+        AC_DEFINE(SENDFILE_FLAVOR_LINUX,1,[Whether linux sendfile() API is available])
+        AC_CHECK_FUNC([sendfile], [netatalk_cv_HAVE_SENDFILE=yes])
+        ;;
+
+    *solaris*)
+        AC_DEFINE(SENDFILE_FLAVOR_SOLARIS, 1, [Solaris sendfile()])
+        AC_SEARCH_LIBS(sendfile, sendfile)
+        AC_CHECK_FUNC([sendfile], [netatalk_cv_HAVE_SENDFILE=yes])
+        ;;
+
+    *freebsd*)
+        AC_DEFINE(SENDFILE_FLAVOR_BSD, 1, [Define if the sendfile() function uses BSD semantics])
+        AC_CHECK_FUNC([sendfile], [netatalk_cv_HAVE_SENDFILE=yes])
+        ;;
+
+    *)
+        ;;
+
+    esac
+
+    if test x"$netatalk_cv_HAVE_SENDFILE" = x"yes"; then
+        AC_DEFINE(WITH_SENDFILE,1,[Whether sendfile() should be used])
+    fi
 fi
 
 dnl -- check for libgcrypt, if found enables DHX UAM
@@ -1079,7 +1111,7 @@ if test x"$with_acl_support" = x"yes" ; then
 				[netatalk_cv_HAVE_ACL_GET_PERM_NP=no])
 				LIBS=$acl_LIBS
 			])
-			if test x"netatalk_cv_HAVE_ACL_GET_PERM_NP" = x"yes"; then
+			if test x"$netatalk_cv_HAVE_ACL_GET_PERM_NP" = x"yes"; then
 				AC_DEFINE(HAVE_ACL_GET_PERM_NP,1,[Whether acl_get_perm_np() is available])
 			fi
 
@@ -1266,15 +1298,15 @@ AM_CONDITIONAL(USE_PAM, test x$netatalk_cv_install_pam = xyes)
 AM_CONDITIONAL(BUILD_PAM, test x$compile_pam = xyes)
 AM_CONDITIONAL(USE_PGP, test x$compile_pgp = xyes)
 AM_CONDITIONAL(DEFAULT_HOOK, test x$neta_cv_have_libgcrypt != xyes && test x$neta_cv_have_openssl != xyes)
-AM_CONDITIONAL(USE_COBALT, test x$sysv_style = xcobalt)
 AM_CONDITIONAL(USE_NETBSD, test x$sysv_style = xnetbsd)
-AM_CONDITIONAL(USE_REDHAT, test x$sysv_style = xredhat)
-AM_CONDITIONAL(USE_SUSE, test x$sysv_style = xsuse)
+AM_CONDITIONAL(USE_REDHAT_SYSV, test x$sysv_style = xredhat-sysv)
+AM_CONDITIONAL(USE_SUSE_SYSV, test x$sysv_style = xsuse-sysv)
 AM_CONDITIONAL(USE_SHADOWPW, test x$shadowpw = xyes)
 AM_CONDITIONAL(USE_TRU64, test x$sysv_style = xtru64)
 AM_CONDITIONAL(USE_SOLARIS, test x$sysv_style = xsolaris)
 AM_CONDITIONAL(USE_GENTOO, test x$sysv_style = xgentoo)
 AM_CONDITIONAL(USE_DEBIAN, test x$sysv_style = xdebian)
+AM_CONDITIONAL(USE_SYSTEMD, test x$sysv_style = xsystemd || test x$sysv_style = xredhat-systemd || test x$sysv_style = xsuse-systemd)
 AM_CONDITIONAL(USE_UNDEF, test x$sysv_style = x)
 AM_CONDITIONAL(USE_BDB, test x$bdb_required = xyes)
 AM_CONDITIONAL(USE_APPLETALK, test x$netatalk_cv_ddp_enabled = xyes)
@@ -1292,20 +1324,20 @@ AC_OUTPUT([Makefile
 	bin/cnid/cnid2_create
 	bin/getzones/Makefile
 	bin/megatron/Makefile
-    bin/misc/Makefile
+	bin/misc/Makefile
 	bin/nbp/Makefile
 	bin/pap/Makefile
 	bin/psorder/Makefile
 	bin/uniconv/Makefile
 	config/Makefile
-    config/pam/Makefile
+	config/pam/Makefile
 	contrib/Makefile
 	contrib/macusers/Makefile
 	contrib/macusers/macusers
+	contrib/misc/Makefile
 	contrib/printing/Makefile
 	contrib/shell_utils/Makefile
-	contrib/shell_utils/afpd-mtab.pl
-    contrib/shell_utils/apple_dump
+	contrib/shell_utils/apple_dump
 	contrib/shell_utils/asip-status.pl
 	contrib/timelord/Makefile
 	contrib/a2boot/Makefile
@@ -1314,6 +1346,7 @@ AC_OUTPUT([Makefile
 	distrib/config/netatalk-config
 	distrib/initscripts/Makefile
 	distrib/m4/Makefile
+	distrib/systemd/Makefile
 	doc/Makefile
 	etc/Makefile
 	etc/afpd/Makefile

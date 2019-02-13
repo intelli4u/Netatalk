@@ -12,8 +12,6 @@
 #include "config.h"
 #endif /* HAVE_CONFIG_H */
 
-#define USE_TCP_NODELAY
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -220,7 +218,7 @@ static int dsi_tcp_open(DSI *dsi)
 #ifndef IFF_SLAVE
 #define IFF_SLAVE 0
 #endif
-/* foxconn modified start */
+
 static void guess_interface(DSI *dsi, const char *hostname, const char *port)
 {
     int fd;
@@ -228,38 +226,47 @@ static void guess_interface(DSI *dsi, const char *hostname, const char *port)
     struct ifreq ifr;
     struct sockaddr_in *sa = (struct sockaddr_in *)&dsi->server;
 
+    start = list = getifacelist();
+    if (!start)
+        return;
+        
     fd = socket(PF_INET, SOCK_STREAM, 0);
 
-    strcpy(ifr.ifr_name, "br0");
+    while (list && *list) {
+        strlcpy(ifr.ifr_name, *list, sizeof(ifr.ifr_name));
+        list++;
 
-    if (ioctl(dsi->serversock, SIOCGIFFLAGS, &ifr) >= 0)
-    {
-        if ( !(ifr.ifr_flags & (IFF_LOOPBACK | IFF_POINTOPOINT | IFF_SLAVE)) )
-        {
-            if ( ifr.ifr_flags & (IFF_UP | IFF_RUNNING) )
-            {
-                if (ioctl(fd, SIOCGIFADDR, &ifr) >= 0)
-                {
-                    memset(&dsi->server, 0, sizeof(struct sockaddr_storage));
-                    sa->sin_family = AF_INET;
-                    sa->sin_port = htons(atoi(port));
-                    sa->sin_addr = ((struct sockaddr_in *) &ifr.ifr_addr)->sin_addr;
-                
-                    LOG(log_info, logtype_dsi, "dsi_tcp: '%s:%s' on interface '%s' will be used instead.",
-                        getip_string((struct sockaddr *)&dsi->server), port, ifr.ifr_name);
-                }
-            }
-        }
+
+        if (ioctl(dsi->serversock, SIOCGIFFLAGS, &ifr) < 0)
+            continue;
+
+        if (ifr.ifr_flags & (IFF_LOOPBACK | IFF_POINTOPOINT | IFF_SLAVE))
+            continue;
+
+        if (!(ifr.ifr_flags & (IFF_UP | IFF_RUNNING)) )
+            continue;
+
+        if (ioctl(fd, SIOCGIFADDR, &ifr) < 0)
+            continue;
+
+        memset(&dsi->server, 0, sizeof(struct sockaddr_storage));
+        sa->sin_family = AF_INET;
+        sa->sin_port = htons(atoi(port));
+        sa->sin_addr = ((struct sockaddr_in *) &ifr.ifr_addr)->sin_addr;
+
+        LOG(log_info, logtype_dsi, "dsi_tcp: '%s:%s' on interface '%s' will be used instead.",
+            getip_string((struct sockaddr *)&dsi->server), port, ifr.ifr_name);
+        goto iflist_done;
     }
-
     LOG(log_info, logtype_dsi, "dsi_tcp (Chooser will not select afp/tcp) "
         "Check to make sure %s is in /etc/hosts and the correct domain is in "
         "/etc/resolv.conf: %s", hostname, strerror(errno));
 
 iflist_done:
     close(fd);
+    freeifacelist(start);
 }
-/* foxconn modified end */
+
 
 #ifndef AI_NUMERICSERV
 #define AI_NUMERICSERV 0
@@ -284,8 +291,7 @@ int dsi_tcp_init(DSI *dsi, const char *hostname, const char *address,
     hints.ai_flags = AI_NUMERICSERV;
 
     if ( ! address) {
-        //hints.ai_flags |= AI_PASSIVE;
-        hints.ai_flags = AI_PASSIVE;    /* foxconn modified */
+        hints.ai_flags |= AI_PASSIVE;
 #if defined(FREEBSD)
         hints.ai_family = AF_INET6;
 #endif
@@ -325,13 +331,11 @@ int dsi_tcp_init(DSI *dsi, const char *hostname, const char *address,
             setsockopt(dsi->serversock, IPPROTO_IPV6, IPV6_BINDV6ONLY, (char *)&on, sizeof (on));
 #endif
 
-#ifdef USE_TCP_NODELAY
 #ifndef SOL_TCP
 #define SOL_TCP IPPROTO_TCP
 #endif
             flag = 1;
             setsockopt(dsi->serversock, SOL_TCP, TCP_NODELAY, &flag, sizeof(flag));
-#endif /* USE_TCP_NODELAY */
             
             if (bind(dsi->serversock, p->ai_addr, p->ai_addrlen) == -1) {
                 close(dsi->serversock);
@@ -375,7 +379,6 @@ int dsi_tcp_init(DSI *dsi, const char *hostname, const char *address,
     hints.ai_family = AF_UNSPEC;
     hints.ai_socktype = SOCK_STREAM;
 
-    goto interfaces; /* foxconn added */
     if ((ret = getaddrinfo(hostname, port ? port : "548", &hints, &servinfo)) != 0) {
         LOG(log_info, logtype_dsi, "dsi_tcp_init: getaddrinfo '%s': %s\n", hostname, gai_strerror(ret));
         goto interfaces;

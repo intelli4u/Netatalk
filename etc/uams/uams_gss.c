@@ -126,6 +126,8 @@ static void log_ctx_flags( OM_uint32 flags )
 static void log_principal(gss_name_t server_name)
 {
 #if 0
+    if (server_name == GSS_C_NO_NAME)
+        return;
     /* FIXME: must call gss_canonicalize_name before gss_export_name */
     OM_uint32 major_status = 0, minor_status = 0;
     gss_buffer_desc exported_name;
@@ -146,7 +148,7 @@ static int get_afpd_principal(void *obj, gss_name_t *server_name)
     size_t principal_length;
     gss_buffer_desc s_princ_buffer;
 
-    /* get all the required information from afpd */
+    /* get information from afpd */
     if (uam_afpserver_option(obj, UAM_OPTION_FQDN, (void*) &fqdn, &fqdnlen) < 0)
         return 1;
     LOG(log_debug, logtype_uams, "get_afpd_principal: fqdn: %s", fqdn);
@@ -155,11 +157,13 @@ static int get_afpd_principal(void *obj, gss_name_t *server_name)
         return 1;
     LOG(log_debug, logtype_uams, "get_afpd_principal: service: %s", service);
 
-    /* we need all the info, log error and return if one's missing */
+    /* if we don't have all the info, log that and return GSS_C_NO_NAME */
     if (!service || !servicelen || !fqdn || !fqdnlen) {
-        LOG(log_error, logtype_uams,
-            "get_afpd_principal: could not retrieve required information from afpd.");
-        return 1;
+        LOG(log_note, logtype_uams,
+            "get_afpd_principal: could not retrieve information from afpd, using default service principal(s)");
+
+	       *server_name = GSS_C_NO_NAME;
+        return 0;
     }
 
     /* allocate memory to hold the temporary principal string */
@@ -446,7 +450,8 @@ static int do_gss_auth(void *obj, char *ibuf, int ticket_len,
     gss_release_cred( &status, &server_creds );
 
 cleanup_vars:
-    gss_release_name( &status, &server_name );
+    if (server_name != GSS_C_NO_NAME)
+        gss_release_name( &status, &server_name );
 
     return ret;
 }

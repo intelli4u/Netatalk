@@ -2,12 +2,12 @@
 .\"     Title: afpd
 .\"    Author: [FIXME: author] [see http://docbook.sf.net/el/author]
 .\" Generator: DocBook XSL Stylesheets v1.75.2 <http://docbook.sf.net/>
-.\"      Date: 21 Apr 2010
-.\"    Manual: Netatalk 2.1
-.\"    Source: Netatalk 2.1
+.\"      Date: 08 Mar 2011
+.\"    Manual: Netatalk 2.2
+.\"    Source: Netatalk 2.2
 .\"  Language: English
 .\"
-.TH "AFPD" "8" "21 Apr 2010" "Netatalk 2.1" "Netatalk 2.1"
+.TH "AFPD" "8" "08 Mar 2011" "Netatalk 2.2" "Netatalk 2.2"
 .\" -----------------------------------------------------------------
 .\" * set default formatting
 .\" -----------------------------------------------------------------
@@ -201,9 +201,31 @@ for the creation of folders in Netatalk\&.
 .RE
 .SH "SIGNALS"
 .PP
-Signals that are sent to the main
+To shut down a user\'s
+\fBafpd\fR
+process it is recommended that
+\fBSIGKILL (\-9)\fR
+\fINOT\fR
+be used, except as a last resort, as this may leave the CNID database in an inconsistent state\&. The safe way to terminate an
+\fBafpd\fR
+is to send it a
+\fBSIGTERM (\-15)\fR
+signal and wait for it to die on its own\&.
+.PP
+SIGTERM and SIGUSR1 signals that are sent to the main
 \fBafpd\fR
 process are propagated to the children, so all will be affected\&.
+.PP
+SIGTERM
+.RS 4
+Clean exit\&. Propagates from master to childs\&.
+.RE
+.PP
+SIGQUIT
+.RS 4
+Send this to the master
+\fBafpd\fR, it will exit leaving all children running! Can be used to implement AFP service without downtime\&.
+.RE
 .PP
 SIGHUP
 .RS 4
@@ -223,7 +245,7 @@ enables
 logging for this process\&. The log is sent to fhe file
 /tmp/afpd\&.PID\&.XXXXXX\&. Sending another
 \fBSIGINT\fR
-will terminate the process\&.
+will revert to the original log settings\&.
 .RE
 .PP
 SIGUSR1
@@ -239,17 +261,6 @@ The
 \fBafpd\fR
 process will look in the message directory configured at build time for a file named message\&.pid\&. For each one found, a the contents will be sent as a message to the associated AFP client\&. The file is removed after the message is sent\&. This should only be sent to a child
 \fBafpd\fR\&.
-.sp
-To shut down a user\'s
-\fBafpd\fR
-process it is recommended that
-\fBSIGKILL (\-9)\fR
-\fINOT\fR
-be used, except as a last resort, as this may leave the CNID database in an inconsistent state\&. The safe way to terminate an
-\fBafpd\fR
-is to send it a
-\fBSIGTERM (\-15)\fR
-signal and wait for it to die on its own\&.
 .RE
 .SH "FILES"
 .PP
@@ -278,7 +289,17 @@ user\'s list of volumes to mount
 list of server signature
 .RE
 .PP
-:ETCDIR:/netatalk/msg/message\&.pid
+:ETCDIR:/afp_voluuid\&.conf
+.RS 4
+list of UUID for Time Machine volume
+.RE
+.PP
+:ETCDIR:/afp_ldap\&.conf
+.RS 4
+configuration file for LDAP and ACL support
+.RE
+.PP
+:ETCDIR:/msg/message\&.pid
 .RS 4
 contains messages to be sent to users\&.
 .RE
@@ -290,4 +311,6 @@ contains messages to be sent to users\&.
 \fBafpd.conf\fR(5),
 \fBAppleVolumes.default\fR(5),
 \fBafp_signature.conf\fR(5),
+\fBafp_voluuid.conf\fR(5),
+\fBafp_ldap.conf\fR(5),
 \fBdbd\fR(1)\&.

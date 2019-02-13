@@ -17,6 +17,9 @@
 #include <unistd.h>
 #endif /* HAVE_UNISTD_H */
 #include <poll.h>
+#include <stdbool.h>
+#include <sys/stat.h>
+
 #include <netatalk/at.h>
 
 #include <atalk/unicode.h>
@@ -47,6 +50,12 @@
 #endif /* NDEBUG */
 
 #define STRCMP(a,b,c) (strcmp(a,c) b 0)
+#ifndef MAX
+#define MAX(a,b) ((a) > (b) ? a : b)
+#endif
+#ifndef MIN
+#define MIN(a,b) ((a) < (b) ? a : b)
+#endif
 
 #if BYTE_ORDER == BIG_ENDIAN
 #define hton64(x)       (x)
@@ -68,11 +77,15 @@ extern void freeifacelist(char **);
 
 #define diatolower(x)     _dialowermap[(unsigned char) (x)]
 #define diatoupper(x)     _diacasemap[(unsigned char) (x)]
+#ifndef NO_DDP
 extern int atalk_aton     (char *, struct at_addr *);
+#endif
 extern void bprint        (char *, int);
 extern int strdiacasecmp  (const char *, const char *);
 extern int strndiacasecmp (const char *, const char *, size_t);
 extern pid_t server_lock  (char * /*program*/, char * /*file*/, int /*debug*/);
+extern int check_lockfile (const char *program, const char *pidfile);
+extern int create_lockfile(const char *program, const char *pidfile);
 extern void fault_setup	  (void (*fn)(void *));
 extern void netatalk_panic(const char *why);
 #define server_unlock(x)  (unlink(x))
@@ -154,7 +167,8 @@ struct polldata {
                          * pointer to afp_child_t for IPC fd             */
 };
 
-extern void fdset_add_fd(struct pollfd **fdsetp,
+extern void fdset_add_fd(int maxconns,
+                         struct pollfd **fdsetp,
                          struct polldata **polldatap,
                          int *fdset_usedp,
                          int *fdset_sizep,
@@ -174,13 +188,21 @@ extern int recv_fd(int fd, int nonblocking);
  *****************************************************************/
 
 extern const char *getcwdpath(void);
+extern const char *fullpathname(const char *);
 extern char *stripped_slashes_basename(char *p);
-extern int lchdir(const char *dir);
 extern void randombytes(void *buf, int n);
-#endif  /* _ATALK_UTIL_H */
+extern int daemonize(int nochdir, int noclose);
+
+extern int ochdir(const char *dir, int options);
+extern int ostat(const char *path, struct stat *buf, int options);
+extern int ostatat(int dirfd, const char *path, struct stat *st, int options);
+extern int ochown(const char *path, uid_t owner, gid_t group, int options);
+extern int ochmod(const char *path, mode_t mode, const struct stat *st, int options);
 
 /******************************************************************
  * cnid.c
  *****************************************************************/
 
 extern bstring rel_path_in_vol(const char *path, const char *volpath);
+
+#endif  /* _ATALK_UTIL_H */

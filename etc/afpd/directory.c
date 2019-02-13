@@ -43,9 +43,6 @@
 #include "mangle.h"
 #include "hash.h"
 
-/* foxconn add start, improvemennt of time machine backup rate,
-   Jonathan 2012/08/22 */
-#define TIME_MACHINE_WA 
 /*
  * FIXMEs, loose ends after the dircache rewrite:
  * o merge dircache_search_by_name and dir_add ??
@@ -87,46 +84,6 @@ struct path Cur_Path = {
  */
 q_t *invalid_dircache_entries;
 
-/* foxconn add start, Jonathan 2012/08/22 */
-#ifdef TIME_MACHINE_WA 
-/* Eric Kao, 2012/07/05 */
-static int check_bands_did_flag = 0;
-static int files_num = 0;
-static int bands_did = 0;
-static int sparse_did = 0;
-static unsigned int bands_offcnt =0;  /* declare as static, jon, 2012/07/31 */
-
-void  afp_bandsdid_IncreaseOffcnt(unsigned int did)
-{
-#if 0  /* if band count > 0, store it's pid for tmd daemon, jon 2012/07/31 */
-	if(ntohl(did )== afp_getbandsdid())
-	{
-		bands_offcnt++;
-		p_create_pid_file();	
-	}
-#else
-	if(ntohl(did )== afp_getbandsdid())
-		bands_offcnt++;
-#endif	
-}
-
-void  afp_bandsdid_decreaseOffcnt(unsigned int did)
-{
-	if(ntohl(did )== afp_getbandsdid())
-		bands_offcnt--;
-}
-
-unsigned int afp_bandsdid_GetOffcnt()
-{
-	return bands_offcnt;
-}
-
-void afp_bandsdid_SetOffcnt(unsigned int Val)
-{
-	bands_offcnt = Val;
-}
-#endif 
-/* foxconn add end, Jonathan 2012/08/22 */
 
 /*******************************************************************************************
  * Locals
@@ -175,7 +132,7 @@ static int netatalk_mkdir(const struct vol *vol, const char *name)
 }
 
 /* ------------------- */
-static int deletedir(int dirfd, char *dir)
+static int deletedir(const struct vol *vol, int dirfd, char *dir)
 {
     char path[MAXPATHLEN + 1];
     DIR *dp;
@@ -206,11 +163,11 @@ static int deletedir(int dirfd, char *dir)
             break;
         }
         strcpy(path + len, de->d_name);
-        if (lstatat(dirfd, path, &st)) {
+        if (ostatat(dirfd, path, &st, vol_syml_opt(vol))) {
             continue;
         }
         if (S_ISDIR(st.st_mode)) {
-            err = deletedir(dirfd, path);
+            err = deletedir(vol, dirfd, path);
         } else {
             err = netatalk_unlinkat(dirfd, path);
         }
@@ -272,7 +229,7 @@ static int copydir(const struct vol *vol, int dirfd, char *src, char *dst)
         }
         strcpy(spath + slen, de->d_name);
 
-        if (lstatat(dirfd, spath, &st) == 0) {
+        if (ostatat(dirfd, spath, &st, vol_syml_opt(vol)) == 0) {
             if (strlen(de->d_name) > drem) {
                 err = AFPERR_PARAM;
                 break;
@@ -294,7 +251,7 @@ static int copydir(const struct vol *vol, int dirfd, char *src, char *dst)
     }
 
     /* keep the same time stamp. */
-    if (lstatat(dirfd, src, &st) == 0) {
+    if (ostatat(dirfd, src, &st, vol_syml_opt(vol)) == 0) {
         ut.actime = ut.modtime = st.st_mtime;
         utime(dst, &ut);
     }
@@ -342,7 +299,7 @@ static int set_dir_errors(struct path *path, const char *where, int err)
  *
  * @note If the passed ret->m_name is mangled, we'll demangle it
  */
-static int cname_mtouname(const struct vol *vol, const struct dir *dir, struct path *ret, int toUTF8)
+static int cname_mtouname(const struct vol *vol, struct dir *dir, struct path *ret, int toUTF8)
 {
     static char temp[ MAXPATHLEN + 1];
     char *t;
@@ -372,6 +329,12 @@ static int cname_mtouname(const struct vol *vol, const struct dir *dir, struct p
 
         /* check for OS X mangled filename :( */
         t = demangle_osx(vol, ret->m_name, dir->d_did, &fileid);
+
+        if (curdir == NULL) {
+            /* demangle_osx() calls dirlookup() which might have clobbered curdir */
+            movecwd(vol, dir);
+        }
+
         LOG(log_maxdebug, logtype_afpd, "cname_mtouname('%s',did:%u) {demangled:'%s', fileid:%u}",
             ret->m_name, ntohl(dir->d_did), t, ntohl(fileid));
 
@@ -502,19 +465,29 @@ struct dir *dirlookup_bypath(const struct vol *vol, const char *path)
     bstring statpath = NULL;
     struct bstrList *l = NULL;
     struct stat st;
-	int i;
 
     cnid = htonl(2);
     dir = vol->v_root;
 
+    LOG(log_debug, logtype_afpd, "dirlookup_bypath(\"%s\")", path);
+
+    if (strcmp(vol->v_path, path) == 0)
+        return dir;
+
     EC_NULL(rpath = rel_path_in_vol(path, vol->v_path)); /* 1. */
+
+    LOG(log_debug, logtype_afpd, "dirlookup_bypath: rpath: \"%s\"", cfrombstr(rpath));
+
     EC_NULL(statpath = bfromcstr(vol->v_path));          /* 2. */
 
     l = bsplit(rpath, '/');
-    for (i = 0; i < l->qty ; i++) {                  /* 3. */
+    for (int i = 0; i < l->qty ; i++) {                  /* 3. */
         did = cnid;
         EC_ZERO(bcatcstr(statpath, "/"));
         EC_ZERO(bconcat(statpath, l->entry[i]));
+
+        LOG(log_debug, logtype_afpd, "dirlookup_bypath: statpath: \"%s\"", cfrombstr(statpath));
+
         EC_ZERO_LOGSTR(lstat(cfrombstr(statpath), &st),
                        "lstat(rpath: %s, elem: %s): %s: %s",
                        cfrombstr(rpath), cfrombstr(l->entry[i]),
@@ -527,14 +500,14 @@ struct dir *dirlookup_bypath(const struct vol *vol, const char *path)
                                            dir,
                                            cfrombstr(l->entry[i]),
                                            blength(l->entry[i]))) == NULL) {
+
             if ((cnid = cnid_add(vol->v_cdb,             /* 6. */
                                  &st,
                                  did,
                                  cfrombstr(l->entry[i]),
                                  blength(l->entry[i]),
-                                 0)) == CNID_INVALID) {
+                                 0)) == CNID_INVALID)
                 EC_FAIL;
-            }
 
             if ((dir = dirlookup(vol, cnid)) == NULL) /* 7. */
                 EC_FAIL;
@@ -547,6 +520,9 @@ EC_CLEANUP:
     bdestroy(statpath);
     if (ret != 0)
         return NULL;
+
+    LOG(log_debug, logtype_afpd, "dirlookup_bypath: result: \"%s\"",
+        cfrombstr(dir->d_fullpath));
 
     return dir;
 }
@@ -671,7 +647,7 @@ struct dir *dirlookup(const struct vol *vol, cnid_t did)
     LOG(log_debug, logtype_afpd, "dirlookup(did: %u): stating \"%s\"",
         ntohl(did), cfrombstr(fullpath));
 
-    if (lstat(cfrombstr(fullpath), &st) != 0) { /* 5a */
+    if (ostat(cfrombstr(fullpath), &st, vol_syml_opt(vol)) != 0) { /* 5a */
         switch (errno) {
         case ENOENT:
             afp_errno = AFPERR_NOOBJ;
@@ -759,7 +735,7 @@ int caseenumerate(const struct vol *vol, struct path *path, struct dir *dir)
     if ( dir->d_did == did && strcmp(lname, path->u_name) == 0) {
         path->u_name = cname;
         path->d_dir = NULL;
-        if (of_stat( path ) == 0 ) {
+        if (of_stat(vol, path ) == 0 ) {
             return 0;
         }
         /* something changed, we cannot stat ... */
@@ -790,7 +766,7 @@ int caseenumerate(const struct vol *vol, struct path *path, struct dir *dir)
             strlcpy(cname, de->d_name, sizeof(cname));
             path->u_name = cname;
             path->d_dir = NULL;
-            if (of_stat( path ) == 0 ) {
+            if (of_stat(vol, path ) == 0 ) {
                 LOG(log_debug, logtype_afpd, "caseenumerate: using dir: %s, path: %s", de->d_name, path->u_name);
                 strlcpy(lname, tmp, sizeof(lname));
                 did = dir->d_did;
@@ -923,7 +899,7 @@ struct dir *dir_add(struct vol *vol, const struct dir *dir, struct path *path, i
     cnid_t      id;
     struct adouble  ad;
     struct adouble *adp = NULL;
-    bstring fullpath;
+    bstring fullpath = NULL;
 
     AFP_ASSERT(vol);
     AFP_ASSERT(dir);
@@ -1289,7 +1265,7 @@ struct path *cname(struct vol *vol, struct dir *dir, char **cpath)
              *   and thus call continue which should terminate the while loop because
              *   len = 0. Ok?
              */
-            if (of_stat(&ret) != 0) { /* 9 */
+            if (of_stat(vol, &ret) != 0) { /* 9 */
                 /*
                  * ret.u_name doesn't exist, might be afp_createfile|dir
                  * that means it should have been the last part
@@ -1407,9 +1383,9 @@ int movecwd(const struct vol *vol, struct dir *dir)
     LOG(log_debug, logtype_afpd, "movecwd(to: did: %u, \"%s\")",
         ntohl(dir->d_did), cfrombstr(dir->d_fullpath));
 
-    if ((ret = lchdir(cfrombstr(dir->d_fullpath))) != 0 ) {
-        LOG(log_debug, logtype_afpd, "movecwd(\"%s\"): ret: %u, %s",
-            cfrombstr(dir->d_fullpath), ret, strerror(errno));
+    if ((ret = ochdir(cfrombstr(dir->d_fullpath), vol_syml_opt(vol))) != 0 ) {
+        LOG(log_debug, logtype_afpd, "movecwd(\"%s\"): %s",
+            cfrombstr(dir->d_fullpath), strerror(errno));
         if (ret == 1) {
             /* p is a symlink or getcwd failed */
             afp_errno = AFPERR_BADTYPE;
@@ -1454,7 +1430,7 @@ int check_access(char *path, int mode)
     if (!p)
         return -1;
 
-    accessmode(p, &ma, curdir, NULL);
+    accessmode(current_vol, p, &ma, curdir, NULL);
     if ((mode & OPENACC_WR) && !(ma.ma_user & AR_UWRITE))
         return -1;
     if ((mode & OPENACC_RD) && !(ma.ma_user & AR_UREAD))
@@ -1468,7 +1444,7 @@ int file_access(struct path *path, int mode)
 {
     struct maccess ma;
 
-    accessmode(path->u_name, &ma, curdir, &path->st);
+    accessmode(current_vol, path->u_name, &ma, curdir, &path->st);
 
     LOG(log_debug, logtype_afpd, "file_access(\"%s\"): mapped user mode: 0x%02x",
         path->u_name, ma.ma_user);
@@ -1523,12 +1499,6 @@ int getdirparams(const struct vol *vol,
     cnid_t              pdid;
     struct stat *st = &s_path->st;
     char *upath = s_path->u_name;
-/* foxconn add start, Jonathan 2012/08/22 */
-#ifdef TIME_MACHINE_WA 
-    static int recnt_times  = 0; /* do 1 time before workaround */
-#endif
-/* foxconn add end, Jonathan 2012/08/22 */
-
 
     if ((bitmap & ((1 << DIRPBIT_ATTR)  |
                    (1 << DIRPBIT_CDATE) |
@@ -1581,7 +1551,6 @@ int getdirparams(const struct vol *vol,
                 ashort = htons(ATTRBIT_INVISIBLE);
             } else
                 ashort = 0;
-            ashort |= htons(ATTRBIT_SHARED);
             memcpy( data, &ashort, sizeof( ashort ));
             data += sizeof( ashort );
             break;
@@ -1618,10 +1587,6 @@ int getdirparams(const struct vol *vol,
                 memcpy( data, ad_entry( &ad, ADEID_FINDERI ), 32 );
             } else { /* no appledouble */
                 memset( data, 0, 32 );
-                /* set default view -- this also gets done in ad_open() */
-                ashort = htons(FINDERINFO_CLOSEDVIEW);
-                memcpy(data + FINDERINFO_FRVIEWOFF, &ashort, sizeof(ashort));
-
                 /* dot files are by default visible */
                 if (invisible_dots(vol, cfrombstr(dir->d_u_name))) {
                     ashort = htons(FINDERINFO_INVISIBLE);
@@ -1654,26 +1619,6 @@ int getdirparams(const struct vol *vol,
         case DIRPBIT_OFFCNT :
             ashort = 0;
             /* this needs to handle current directory access rights */
-/* foxconn add start, Jonathan 2012/08/22 */
-#ifdef TIME_MACHINE_WA 
-			//if(recnt_times >= 2 && (ntohl(dir->d_did) == afp_getbandsdid()) )
-			if(recnt_times >= 1 && (ntohl(dir->d_did) == afp_getbandsdid()) ) /* set recount time >= 1, jon 2012/07/31 */
-			{
-				 ashort = (afp_bandsdid_GetOffcnt() > 0xffff)?0xffff:afp_bandsdid_GetOffcnt();
-			}	
-            else if (diroffcnt(dir, st)) {
-
-                ashort = (dir->d_offcnt > 0xffff)?0xffff:dir->d_offcnt;
-            }
-            else if ((ret = for_each_dirent(vol, upath, NULL,NULL)) >= 0) {
-				if(ntohl(dir->d_did) == afp_getbandsdid()){
-					recnt_times++;
-					afp_bandsdid_SetOffcnt((unsigned int)ret);
-				}	
-                setdiroffcnt(dir, st,  ret);
-                ashort = (dir->d_offcnt > 0xffff)?0xffff:dir->d_offcnt;
-            }
-#else
             if (diroffcnt(dir, st)) {
                 ashort = (dir->d_offcnt > 0xffff)?0xffff:dir->d_offcnt;
             }
@@ -1681,9 +1626,6 @@ int getdirparams(const struct vol *vol,
                 setdiroffcnt(dir, st,  ret);
                 ashort = (dir->d_offcnt > 0xffff)?0xffff:dir->d_offcnt;
             }
-#endif			
-/* foxconn add end, Jonathan 2012/08/22 */
-
             ashort = htons( ashort );
             memcpy( data, &ashort, sizeof( ashort ));
             data += sizeof( ashort );
@@ -1702,7 +1644,7 @@ int getdirparams(const struct vol *vol,
             break;
 
         case DIRPBIT_ACCESS :
-            accessmode( upath, &ma, dir , st);
+            accessmode(vol, upath, &ma, dir , st);
 
             *data++ = ma.ma_user;
             *data++ = ma.ma_world;
@@ -1737,6 +1679,9 @@ int getdirparams(const struct vol *vol,
             break;
 
         case DIRPBIT_UNIXPR :
+            /* accessmode may change st_mode with ACLs */
+            accessmode(vol, upath, &ma, dir, st);
+
             aint = htonl(st->st_uid);
             memcpy( data, &aint, sizeof( aint ));
             data += sizeof( aint );
@@ -1748,8 +1693,6 @@ int getdirparams(const struct vol *vol,
             aint = htonl ( aint & ~S_ISGID );  /* Remove SGID, OSX doesn't like it ... */
             memcpy( data, &aint, sizeof( aint ));
             data += sizeof( aint );
-
-            accessmode( upath, &ma, dir , st);
 
             *data++ = ma.ma_user;
             *data++ = ma.ma_world;
@@ -2280,47 +2223,6 @@ int afp_syncdir(AFPObj *obj _U_, char *ibuf, size_t ibuflen _U_, char *rbuf _U_,
     return ( AFP_OK );
 }
 
-/* foxconn add start, Jonathan 2012/08/22 */
-#ifdef TIME_MACHINE_WA 
-/* Eric Kao, 2012/07/05 */
-void afp_enablechk(void)
-{
-    check_bands_did_flag = 1;
-}
-
-void afp_disablechk(void)
-{
-    check_bands_did_flag = 0;
-}
-
-int afp_checkflag(void)
-{
-    return check_bands_did_flag;
-}
-
-void afp_recbandsdid(int did)
-{
-	bands_did = did;
-}
-
-void afp_recSparsedid(int did)
-{
-	sparse_did = did;
-}
-int  afp_getSparsedid()
-{
-	return sparse_did;
-}
-
-int  afp_getbandsdid()
-{
-	return bands_did;
-}
-/* Eric Kao, 2012/07/05 */
-#endif 
-/* foxconn add start, Jonathan 2012/08/22 */
-
-
 int afp_createdir(AFPObj *obj, char *ibuf, size_t ibuflen _U_, char *rbuf, size_t *rbuflen)
 {
     struct adouble  ad;
@@ -2343,18 +2245,10 @@ int afp_createdir(AFPObj *obj, char *ibuf, size_t ibuflen _U_, char *rbuf, size_
 
     if (vol->v_flags & AFPVOL_RO)
         return AFPERR_VLOCK;
-/* foxconn add start, Jonathan 2012/08/22 */
-#ifdef TIME_MACHINE_WA 
-    afp_enablechk(); // Eric Kao, 2012/07/05
-#endif
 
     memcpy( &did, ibuf, sizeof( did ));
     ibuf += sizeof( did );
     if (NULL == ( dir = dirlookup( vol, did )) ) {
-/* foxconn add start, Jonathan 2012/08/22 */
-#ifdef TIME_MACHINE_WA 
-    	afp_disablechk(); // Eric Kao, 2012/07/05
-#endif
         return afp_errno; /* was AFPERR_NOOBJ */
     }
     /* for concurrent access we need to be sure we are not in the
@@ -2363,10 +2257,6 @@ int afp_createdir(AFPObj *obj, char *ibuf, size_t ibuflen _U_, char *rbuf, size_
     movecwd(vol, dir);
 
     if (NULL == ( s_path = cname( vol, dir, &ibuf )) ) {
-/* foxconn add start, Jonathan 2012/08/22 */
-#ifdef TIME_MACHINE_WA 
-    	afp_disablechk(); // Eric Kao, 2012/07/05
-#endif
         return get_afp_errno(AFPERR_PARAM);
     }
     /* cname was able to move curdir to it! */
@@ -2379,15 +2269,11 @@ int afp_createdir(AFPObj *obj, char *ibuf, size_t ibuflen _U_, char *rbuf, size_
         return err;
     }
 
-    if (of_stat(s_path) < 0) {
+    if (of_stat(vol, s_path) < 0) {
         return AFPERR_MISC;
     }
 
     curdir->d_offcnt++;
-/* foxconn add start, Jonathan 2012/08/22 */
-#ifdef TIME_MACHINE_WA 
-	afp_bandsdid_IncreaseOffcnt(curdir->d_did);
-#endif	
 
     if ((dir = dir_add(vol, curdir, s_path, strlen(s_path->u_name))) == NULL) {
         return AFPERR_MISC;
@@ -2415,10 +2301,6 @@ createdir_done:
     memcpy( rbuf, &dir->d_did, sizeof( u_int32_t ));
     *rbuflen = sizeof( u_int32_t );
     setvoltime(obj, vol );
-/* foxconn add start, Jonathan 2012/08/22 */
-#ifdef TIME_MACHINE_WA 
-    afp_disablechk(); // Eric Kao, 2012/07/05
-#endif    
     return( AFP_OK );
 }
 
@@ -2455,10 +2337,10 @@ int renamedir(const struct vol *vol,
             /* this needs to copy and delete. bleah. that means we have
              * to deal with entire directory hierarchies. */
             if ((err = copydir(vol, dirfd, src, dst)) < 0) {
-                deletedir(-1, dst);
+                deletedir(vol, -1, dst);
                 return err;
             }
-            if ((err = deletedir(dirfd, src)) < 0)
+            if ((err = deletedir(vol, dirfd, src)) < 0)
                 return err;
             break;
         default :
@@ -2509,7 +2391,7 @@ int deletecurdir(struct vol *vol)
     err = vol->vfs->vfs_deletecurdir(vol);
     if (err) {
         LOG(log_error, logtype_afpd, "deletecurdir: error deleting .AppleDouble in \"%s\"",
-            curdir->d_fullpath);
+            cfrombstr(curdir->d_fullpath));
         return err;
     }
 
@@ -2549,7 +2431,7 @@ int deletecurdir(struct vol *vol)
         dir_remove( vol, fdir );
     } else {
         LOG(log_error, logtype_afpd, "deletecurdir(\"%s\"): netatalk_rmdir_all_errors error",
-            curdir->d_fullpath);
+            cfrombstr(curdir->d_fullpath));
     }
 
 delete_done:
@@ -2738,12 +2620,12 @@ int afp_mapname(AFPObj *obj _U_, char *ibuf, size_t ibuflen _U_, char *rbuf, siz
 
         case 2 : /* unicode */
         case 4 :
-            LOG(log_debug, logtype_afpd, "afp_mapname: gettgrnam for name: %s",ibuf);
+            LOG(log_debug, logtype_afpd, "afp_mapname: getgrnam for name: %s",ibuf);
             if (NULL == ( gr = (struct group *)getgrnam( ibuf ))) {
                 return( AFPERR_NOITEM );
             }
             id = gr->gr_gid;
-            LOG(log_debug, logtype_afpd, "afp_mapname: gettgrnam for name: %s -> id: %d",ibuf, id);
+            LOG(log_debug, logtype_afpd, "afp_mapname: getgrnam for name: %s -> id: %d",ibuf, id);
             id = htonl(id);
             memcpy( rbuf, &id, sizeof( id ));
             *rbuflen = sizeof( id );
@@ -2837,7 +2719,7 @@ int afp_opendir(AFPObj *obj _U_, char *ibuf, size_t ibuflen  _U_, char *rbuf, si
         return path_error(path, AFPERR_NOOBJ);
     }
 
-    if ( !path->st_valid && of_stat(path ) < 0 ) {
+    if ( !path->st_valid && of_stat(vol, path) < 0 ) {
         return( AFPERR_NOOBJ );
     }
     if ( path->st_errno ) {
